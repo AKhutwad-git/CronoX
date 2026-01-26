@@ -4,6 +4,7 @@ import jwt, { SignOptions } from 'jsonwebtoken';
 import { UserRepository } from './user.repository';
 import { config } from '../../lib/config';
 import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
 
 const userRepository = new UserRepository();
 
@@ -12,47 +13,65 @@ const getErrorMessage = (error: unknown) =>
 
 export const register = async (req: Request, res: Response) => {
   try {
-    const { email, password, role } = req.body as {
+    const correlationId = (req.headers['x-correlation-id'] as string) || 'unknown';
+    const { email, password, role, fullName } = req.body as {
       email?: string;
       password?: string;
       role?: 'buyer' | 'professional' | 'admin';
+      fullName?: string;
     };
 
     if (!email || !password || !role) {
       return res.status(400).json({ message: 'Email, password, and role are required' });
     }
 
+    const normalizedRole = role.toLowerCase() as 'buyer' | 'professional' | 'admin';
+    if (!['buyer', 'professional', 'admin'].includes(normalizedRole)) {
+      return res.status(400).json({ message: 'Invalid role' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    logger.info('[auth] Register request received', {
+      correlationId,
+      email: normalizedEmail,
+      role: normalizedRole,
+      hasFullName: Boolean(fullName?.trim()),
+    });
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await prisma.$transaction(async (tx) => {
-         // 1. Check if user exists
-         const existingUser = await tx.user.findUnique({ where: { email } });
-         if (existingUser) {
-             throw new Error('User with this email already exists');
-         }
+      const existingUser = await tx.user.findUnique({ where: { email: normalizedEmail } });
+      if (existingUser) {
+        throw new Error('User with this email already exists');
+      }
 
-         // 2. Create User
-         const newUser = await tx.user.create({
-             data: {
-                 email,
-                 passwordHash: hashedPassword,
-                 role,
-             }
-         });
+      const newUser = await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          passwordHash: hashedPassword,
+          role: normalizedRole,
+        }
+      });
 
-         // 3. Create Professional profile if needed
-         if (role === 'professional') {
-             await tx.professional.create({
-                 data: {
-                     userId: newUser.id,
-                     baseRate: 100, // Default
-                     currency: 'INR',
-                     status: 'active'
-                 }
-             });
-         }
+      switch (normalizedRole) {
+        case 'professional':
+          await tx.professional.create({
+            data: {
+              userId: newUser.id,
+              baseRate: 100,
+              currency: 'INR',
+              status: 'active'
+            }
+          });
+          break;
+        case 'buyer':
+        case 'admin':
+          break;
+      }
 
-         return newUser;
+      return newUser;
     });
 
     const signOptions: SignOptions = {
@@ -63,23 +82,54 @@ export const register = async (req: Request, res: Response) => {
       config.jwt.secret,
       signOptions
     );
+    logger.info('[auth] Register success', {
+      correlationId,
+      userId: result.id,
+      role: result.role,
+    });
 
-    res.status(201).json({ message: 'User created successfully', userId: result.id, role: result.role, token });
+    res.status(201).json({
+      message: 'User created successfully',
+      userId: result.id,
+      role: result.role,
+      token,
+      correlationId,
+    });
   } catch (error: unknown) {
-    if (getErrorMessage(error) === 'User with this email already exists') {
-      return res.status(400).json({ message: 'User already exists' });
+    const correlationId = (req.headers['x-correlation-id'] as string) || 'unknown';
+    const message = getErrorMessage(error);
+
+    logger.error('[auth] Register failed', error, {
+      correlationId,
+      email: req.body?.email,
+      role: req.body?.role,
+    });
+
+    if (message === 'User with this email already exists') {
+      return res.status(400).json({ message: 'User already exists', correlationId });
     }
-    res.status(500).json({ message: 'Error registering user', error: getErrorMessage(error) });
+
+    return res.status(500).json({
+      message: 'Error registering user',
+      error: message,
+      correlationId,
+    });
   }
 };
 
 export const login = async (req: Request, res: Response) => {
   try {
+    const correlationId = (req.headers['x-correlation-id'] as string) || 'unknown';
     const { email, password } = req.body as { email?: string; password?: string };
 
     if (!email || !password) {
       return res.status(400).json({ message: 'Email and password are required' });
     }
+
+    logger.info('[auth] Login attempt', {
+      correlationId,
+      email,
+    });
 
     const user = await userRepository.findByEmail(email);
     if (!user) {
@@ -101,9 +151,19 @@ export const login = async (req: Request, res: Response) => {
       config.jwt.secret,
       signOptions
     );
+    logger.info('[auth] Login success', {
+      correlationId,
+      userId: user.id,
+      role: user.role,
+    });
 
-    res.json({ token, role: user.role, userId: user.id });
+    res.json({ token, role: user.role, userId: user.id, correlationId });
   } catch (error: unknown) {
-    res.status(500).json({ message: 'Error logging in', error: getErrorMessage(error) });
+    const correlationId = (req.headers['x-correlation-id'] as string) || 'unknown';
+    logger.error('[auth] Login failed', error, {
+      correlationId,
+      email: req.body?.email,
+    });
+    res.status(500).json({ message: 'Error logging in', error: getErrorMessage(error), correlationId });
   }
 };

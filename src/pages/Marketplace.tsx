@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
 import { SessionCard } from '@/components/ui/SessionCard';
@@ -8,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Search, Filter, Users } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { apiRequest } from '@/lib/api';
 
 type ListedToken = {
   id: string;
@@ -24,19 +26,14 @@ type ListedToken = {
 
 const Marketplace = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [tokens, setTokens] = useState<ListedToken[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const loadTokens = async () => {
       try {
-        const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
-        const response = await fetch(`${apiBaseUrl}/api/marketplace/tokens`);
-        const data = (await response.json()) as ListedToken[] | { message?: string };
-        if (!response.ok) {
-          const message = 'message' in data ? data.message : undefined;
-          throw new Error(message || 'Failed to load marketplace');
-        }
+        const data = await apiRequest<ListedToken[]>('/marketplace/tokens');
         setTokens(Array.isArray(data) ? data : []);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Please try again in a moment.';
@@ -58,6 +55,21 @@ const Marketplace = () => {
     if (state === 'purchased') return 'booked';
     if (state === 'consumed') return 'completed';
     return 'pending';
+  };
+
+  const handleViewDetails = (tokenId?: string) => {
+    console.log('[marketplace] view details click', { tokenId });
+    if (!tokenId) {
+      toast({
+        title: 'Session unavailable',
+        description: 'Missing session id for details view.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    const target = `/marketplace/tokens/${tokenId}`;
+    console.log('[marketplace] navigate to details', { target });
+    navigate(target);
   };
 
   return (
@@ -95,7 +107,7 @@ const Marketplace = () => {
                   duration={token.durationMinutes}
                   price={Number(token.price)}
                   status={getStatus(token.state)}
-                  onAction={() => {}}
+                  onAction={() => handleViewDetails(token.id)}
                 />
               </motion.div>
             ))}

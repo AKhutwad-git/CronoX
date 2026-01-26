@@ -10,6 +10,7 @@ import SignUp from "./pages/SignUp";
 import SignIn from "./pages/SignIn";
 import Dashboard from "./pages/Dashboard";
 import Marketplace from "./pages/Marketplace";
+import MarketplaceTokenDetails from "./pages/MarketplaceTokenDetails";
 import MySessions from "./pages/MySessions";
 import CreateSession from "./pages/CreateSession";
 import Earnings from "./pages/Earnings";
@@ -37,6 +38,7 @@ const App = () => (
             <Route path="/signin" element={<SignIn />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/marketplace" element={<Marketplace />} />
+            <Route path="/marketplace/tokens/:id" element={<MarketplaceTokenDetails />} />
             <Route path="/my-sessions" element={<MySessions />} />
             <Route path="/create-session" element={<CreateSession />} />
             <Route path="/earnings" element={<Earnings />} />

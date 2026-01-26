@@ -1,6 +1,6 @@
-import { v4 as uuidv4 } from 'uuid';
+import { TokenState } from '@prisma/client';
 
-export type TimeTokenState = 'drafted' | 'listed' | 'purchased' | 'consumed' | 'cancelled';
+export type TimeTokenState = TokenState;
 
 export interface TimeToken {
   id: string;

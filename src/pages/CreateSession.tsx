@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
 import { useToast } from '@/hooks/use-toast';
 import { useRole } from '@/contexts/RoleContext';
+import { apiRequest } from '@/lib/api';
 import { 
   Clock, 
   Calendar, 
@@ -67,11 +68,9 @@ const CreateSession = () => {
     }
 
     try {
-      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
-      const mintResponse = await fetch(`${apiBaseUrl}/api/marketplace/tokens/mint`, {
+      const mintData = await apiRequest<{ id: string }>('/marketplace/tokens/mint', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
@@ -80,22 +79,12 @@ const CreateSession = () => {
         }),
       });
 
-      const mintData = await mintResponse.json();
-      if (!mintResponse.ok) {
-        throw new Error(mintData?.message || 'Failed to create session');
-      }
-
-      const listResponse = await fetch(`${apiBaseUrl}/api/marketplace/tokens/${mintData.id}/list`, {
+      await apiRequest(`/marketplace/tokens/${mintData.id}/list`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
         },
       });
-
-      if (!listResponse.ok) {
-        const listData = await listResponse.json();
-        throw new Error(listData?.message || 'Failed to list session');
-      }
 
       toast({
         title: 'Session Created!',

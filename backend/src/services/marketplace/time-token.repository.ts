@@ -45,11 +45,36 @@ export class TimeTokenRepository extends BaseRepository<
   }
 
   async findByState(state: TimeTokenState) {
-    return prisma.timeToken.findMany({
-      where: { state },
+    try {
+      console.log('[time-token.repository] findByState start', { state });
+      const tokens = await prisma.timeToken.findMany({
+        where: { state },
+        include: {
+          professional: {
+            include: {
+              user: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      console.log('[time-token.repository] findByState success', { count: tokens.length });
+      return tokens;
+    } catch (error) {
+      console.error('[time-token.repository] findByState error', error);
+      throw error;
+    }
+  }
+
+  async findByIdWithProfessional(id: string) {
+    return prisma.timeToken.findUnique({
+      where: { id },
       include: {
-        professional: { include: { user: true } },
-        owner: true
+        professional: {
+          include: {
+            user: true
+          }
+        }
       }
     });
   }

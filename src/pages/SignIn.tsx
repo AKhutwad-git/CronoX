@@ -6,12 +6,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Navbar } from '@/components/layout/Navbar';
 import { useRole } from '@/contexts/RoleContext';
-import { Eye, EyeOff, Clock } from 'lucide-react';
+import { Eye, EyeOff, Clock, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { apiRequest, type ApiRequestError } from '@/lib/api';
 
 const SignIn = () => {
   const navigate = useNavigate();
-  const { setRole, setToken } = useRole();
+  const { setRole, setToken, setAuthenticated } = useRole();
   const { toast } = useToast();
   
   const [showPassword, setShowPassword] = useState(false);
@@ -20,8 +21,22 @@ const SignIn = () => {
     email: '',
     password: '',
   });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const isApiError = (error: unknown): error is ApiRequestError =>
+    typeof error === 'object' && error !== null && 'status' in error;
 
   const getErrorMessage = (error: unknown) => {
+    if (isApiError(error)) {
+      const data = error.data as { message?: unknown } | undefined;
+      if (data && typeof data === 'object' && 'message' in data && typeof data.message === 'string') {
+        return data.message;
+      }
+      if (error.status === 0) {
+        return 'Unable to reach the server. Check your connection and try again.';
+      }
+    }
     if (error instanceof Error) {
       return error.message;
     }
@@ -30,26 +45,41 @@ const SignIn = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
 
+    if (isSubmitting) {
+      return;
+    }
+
+    const email = formData.email.trim().toLowerCase();
+    const password = formData.password;
+
+    if (!email || !password) {
+      setFormError('Email and password are required.');
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
-      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
-      const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: formData.email, password: formData.password }),
-      });
-
-      const data = (await response.json()) as {
+      const data = await apiRequest<{
         token?: string;
         role?: 'buyer' | 'professional';
         message?: string;
-      };
-      if (!response.ok) {
-        throw new Error(data?.message || 'Failed to sign in');
+      }>(`/auth/login`, {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          password,
+        }),
+      });
+
+      if (!data?.token) {
+        throw new Error('Login succeeded but no token was returned.');
       }
 
-      setRole(data.role || selectedRole);
-      setToken(data.token || null);
+      setRole(data.role ?? selectedRole);
+      setToken(data.token);
+      setAuthenticated(true);
 
       toast({
         title: 'Welcome back!',
@@ -58,11 +88,16 @@ const SignIn = () => {
 
       navigate('/dashboard');
     } catch (error: unknown) {
+      console.error('[auth] Sign in failed', error);
+      const message = getErrorMessage(error);
+      setFormError(message);
       toast({
         title: 'Sign in failed',
-        description: getErrorMessage(error),
+        description: message,
         variant: 'destructive',
       });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -113,6 +148,7 @@ const SignIn = () => {
                         ? 'border-status-booked bg-status-booked/5'
                         : 'border-border hover:border-status-booked/50'
                     }`}
+                    disabled={isSubmitting}
                   >
                     <span className={`text-sm font-medium ${selectedRole === 'buyer' ? 'text-status-booked' : 'text-foreground'}`}>
                       Buyer
@@ -126,6 +162,7 @@ const SignIn = () => {
                         ? 'border-accent bg-accent/5'
                         : 'border-border hover:border-accent/50'
                     }`}
+                    disabled={isSubmitting}
                   >
                     <span className={`text-sm font-medium ${selectedRole === 'professional' ? 'text-accent' : 'text-foreground'}`}>
                       Professional
@@ -176,6 +213,12 @@ const SignIn = () => {
                 </div>
               </div>
 
+              {formError && (
+                <p className="text-sm text-destructive" role="alert">
+                  {formError}
+                </p>
+              )}
+
               <Button 
                 type="submit" 
                 className={`w-full h-12 text-base ${
@@ -183,8 +226,16 @@ const SignIn = () => {
                     ? 'bg-accent hover:bg-accent/90 text-accent-foreground' 
                     : 'bg-status-booked hover:bg-status-booked/90 text-white'
                 }`}
+                disabled={isSubmitting}
               >
-                Sign In
+                {isSubmitting ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Signing In...
+                  </span>
+                ) : (
+                  'Sign In'
+                )}
               </Button>
             </form>
 

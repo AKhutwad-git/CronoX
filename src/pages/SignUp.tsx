@@ -6,14 +6,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Navbar } from '@/components/layout/Navbar';
 import { useRole } from '@/contexts/RoleContext';
-import { Clock, Shield, IndianRupee, CheckCircle, Eye, EyeOff } from 'lucide-react';
+import { Clock, Shield, IndianRupee, CheckCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { apiRequest, type ApiRequestError } from '@/lib/api';
 
 const SignUp = () => {
   const [searchParams] = useSearchParams();
   const roleParam = searchParams.get('role') as 'buyer' | 'professional' | null;
   const navigate = useNavigate();
-  const { setRole, setToken } = useRole();
+  const { setRole, setToken, setAuthenticated } = useRole();
   const { toast } = useToast();
   
   const [selectedRole, setSelectedRole] = useState<'buyer' | 'professional'>(roleParam || 'buyer');
@@ -23,8 +24,22 @@ const SignUp = () => {
     email: '',
     password: '',
   });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const isApiError = (error: unknown): error is ApiRequestError =>
+    typeof error === 'object' && error !== null && 'status' in error;
 
   const getErrorMessage = (error: unknown) => {
+    if (isApiError(error)) {
+      const data = error.data as { message?: unknown } | undefined;
+      if (data && typeof data === 'object' && 'message' in data && typeof data.message === 'string') {
+        return data.message;
+      }
+      if (error.status === 0) {
+        return 'Unable to reach the server. Check your connection and try again.';
+      }
+    }
     if (error instanceof Error) {
       return error.message;
     }
@@ -33,43 +48,62 @@ const SignUp = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
+
+    if (isSubmitting) {
+      return;
+    }
+
+    const fullName = formData.fullName.trim();
+    const email = formData.email.trim().toLowerCase();
+    const password = formData.password;
+
+    if (!fullName || !email || !password) {
+      setFormError('Name, email, and password are required.');
+      return;
+    }
 
     try {
-      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
-      const response = await fetch(`${apiBaseUrl}/api/auth/signup`, {
+      setIsSubmitting(true);
+
+      const data = await apiRequest<{
+        token?: string;
+        role?: 'buyer' | 'professional';
+        message?: string;
+      }>(`/auth/signup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: formData.email,
-          password: formData.password,
+          fullName,
+          email,
+          password,
           role: selectedRole,
         }),
       });
 
-      const data = (await response.json()) as {
-        token?: string;
-        role?: 'buyer' | 'professional';
-        message?: string;
-      };
-      if (!response.ok) {
-        throw new Error(data?.message || 'Failed to create account');
+      if (!data?.token) {
+        throw new Error('Account created but no token was returned.');
       }
 
       setRole(data.role || selectedRole);
-      setToken(data.token || null);
+      setToken(data.token);
+      setAuthenticated(true);
 
       toast({
         title: 'Account created successfully!',
         description: `Welcome to CronoX as a ${data.role || selectedRole}.`,
       });
-
       navigate('/dashboard');
     } catch (error: unknown) {
+      console.error('[auth] Sign up failed', error);
+      const message = getErrorMessage(error);
+      setFormError(message);
       toast({
         title: 'Sign up failed',
-        description: getErrorMessage(error),
+        description: message,
         variant: 'destructive',
       });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -107,6 +141,7 @@ const SignUp = () => {
                           ? 'border-status-booked bg-status-booked/5'
                           : 'border-border hover:border-status-booked/50'
                       }`}
+                      disabled={isSubmitting}
                     >
                       <span className={`text-sm font-medium ${selectedRole === 'buyer' ? 'text-status-booked' : 'text-foreground'}`}>
                         Buyer
@@ -121,6 +156,7 @@ const SignUp = () => {
                           ? 'border-accent bg-accent/5'
                           : 'border-border hover:border-accent/50'
                       }`}
+                      disabled={isSubmitting}
                     >
                       <span className={`text-sm font-medium ${selectedRole === 'professional' ? 'text-accent' : 'text-foreground'}`}>
                         Professional
@@ -141,6 +177,7 @@ const SignUp = () => {
                     onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
                     className="mt-1.5 h-12"
                     required
+                    disabled={isSubmitting}
                   />
                 </div>
 
@@ -155,6 +192,7 @@ const SignUp = () => {
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                     className="mt-1.5 h-12"
                     required
+                    disabled={isSubmitting}
                   />
                 </div>
 
@@ -170,16 +208,24 @@ const SignUp = () => {
                       onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                       className="h-12 pr-12"
                       required
+                      disabled={isSubmitting}
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      disabled={isSubmitting}
                     >
                       {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                   </div>
                 </div>
+
+                {formError && (
+                  <p className="text-sm text-destructive" role="alert">
+                    {formError}
+                  </p>
+                )}
 
                 <Button 
                   type="submit" 
@@ -188,8 +234,16 @@ const SignUp = () => {
                       ? 'bg-accent hover:bg-accent/90 text-accent-foreground' 
                       : 'bg-status-booked hover:bg-status-booked/90 text-white'
                   }`}
+                  disabled={isSubmitting}
                 >
-                  Create Account
+                  {isSubmitting ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Creating Account...
+                    </span>
+                  ) : (
+                    'Create Account'
+                  )}
                 </Button>
               </form>
 

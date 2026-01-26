@@ -7,6 +7,7 @@ import { ProfessionalRepository } from '../users/professional.repository';
 import { AuthenticatedRequest } from '../../middleware/auth.middleware';
 import { TimeTokenState } from './marketplace.model';
 import { Prisma, TimeToken } from '@prisma/client';
+import { logger } from '../../lib/logger';
 
 const timeTokenRepository = new TimeTokenRepository();
 const orderRepository = new MarketplaceOrderRepository();
@@ -212,11 +213,22 @@ export const purchaseTimeToken: RequestHandler = async (req, res: Response) => {
 
 export const getListedTimeTokens: RequestHandler = async (req, res: Response) => {
   try {
+    logger.info('[marketplace] GET /api/marketplace/tokens received');
     const tokens = await timeTokenRepository.findByState('listed');
+    logger.info('[marketplace] GET /api/marketplace/tokens result', { count: tokens.length });
     res.json(tokens);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({ message: 'Error fetching tokens', error: message });
+    logger.error('[marketplace] GET /api/marketplace/tokens failed', {
+      error: error instanceof Error ? {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      } : error
+    });
+    res.status(500).json({ 
+      message: 'Internal server error while fetching tokens',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 };
 
@@ -245,12 +257,12 @@ export const cancelTimeToken: RequestHandler = async (req, res: Response) =>
 
 export const getTimeTokenById: RequestHandler = async (req, res: Response) => {
   try {
-    const token = (await timeTokenRepository.findById(req.params.id as string)) as TimeTokenRecord | null;
-    if (token) {
-      res.json(token);
-    } else {
-      res.status(404).send('TimeToken not found');
+    logger.info('[marketplace] GET /api/marketplace/tokens/:id received', { id: req.params.id });
+    const token = await timeTokenRepository.findByIdWithProfessional(req.params.id as string);
+    if (!token) {
+      return res.status(404).json({ message: 'TimeToken not found' });
     }
+    res.json(token);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
     res.status(500).json({ message: 'Error', error: message });

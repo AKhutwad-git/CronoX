@@ -19,6 +19,10 @@ export const createBooking = async (req: Request, res: Response) => {
         if (!user) {
             return res.status(401).json({ message: 'Unauthorized' });
         }
+
+        if (!tokenId || !scheduledAt) {
+            return res.status(400).json({ message: 'tokenId and scheduledAt are required' });
+        }
         
         // 1. Validate Token
         const token = await timeTokenRepository.findById(tokenId);
@@ -31,15 +35,20 @@ export const createBooking = async (req: Request, res: Response) => {
         }
 
         // 2. Create Booking
+        const scheduledDate = new Date(scheduledAt);
+        if (Number.isNaN(scheduledDate.getTime())) {
+            return res.status(400).json({ message: 'scheduledAt must be a valid date' });
+        }
+
         const newBooking = await bookingRepository.createWithValidation({
             timeTokenId: tokenId,
             buyerId: user.userId,
             professionalId: token.professionalId,
-            scheduledAt: new Date(scheduledAt)
+            scheduledAt: scheduledDate
         });
         
         // 3. Create Session
-        const startTime = new Date(scheduledAt);
+        const startTime = scheduledDate;
         const endTime = new Date(startTime.getTime() + token.durationMinutes * 60000);
         
         const newSession = await sessionRepository.createWithValidation({
