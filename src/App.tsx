@@ -2,8 +2,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { RoleProvider } from "@/contexts/RoleContext";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { RoleProvider, useRole, type UserRole } from "@/contexts/RoleContext";
 import Index from "./pages/Index";
 import AuthEntry from "./pages/AuthEntry";
 import SignUp from "./pages/SignUp";
@@ -18,6 +18,25 @@ import Profile from "./pages/Profile";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
+
+type RoleGuardProps = {
+  children: JSX.Element;
+  allowedRoles?: UserRole[];
+};
+
+const RoleGuard = ({ children, allowedRoles }: RoleGuardProps) => {
+  const { isAuthenticated, role } = useRole();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/signin" replace />;
+  }
+
+  if (allowedRoles && (!role || !allowedRoles.includes(role))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return children;
+};
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -36,13 +55,13 @@ const App = () => (
             <Route path="/auth" element={<AuthEntry />} />
             <Route path="/signup" element={<SignUp />} />
             <Route path="/signin" element={<SignIn />} />
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard" element={<RoleGuard><Dashboard /></RoleGuard>} />
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/marketplace/tokens/:id" element={<MarketplaceTokenDetails />} />
-            <Route path="/my-sessions" element={<MySessions />} />
-            <Route path="/create-session" element={<CreateSession />} />
-            <Route path="/earnings" element={<Earnings />} />
-            <Route path="/profile" element={<Profile />} />
+            <Route path="/my-sessions" element={<RoleGuard><MySessions /></RoleGuard>} />
+            <Route path="/create-session" element={<RoleGuard allowedRoles={['professional']}><CreateSession /></RoleGuard>} />
+            <Route path="/earnings" element={<RoleGuard allowedRoles={['professional']}><Earnings /></RoleGuard>} />
+            <Route path="/profile" element={<RoleGuard><Profile /></RoleGuard>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

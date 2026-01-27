@@ -15,30 +15,50 @@ interface RoleContextType {
 const RoleContext = createContext<RoleContextType | undefined>(undefined);
 
 export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [role, setRoleState] = useState<UserRole>(() => {
-    const storedRole = localStorage.getItem('cronox.role');
-    if (storedRole === 'buyer' || storedRole === 'professional') {
-      return storedRole;
+  const resolveRoleFromToken = useCallback((jwt: string | null): UserRole => {
+    if (!jwt) {
+      return null;
     }
+
+    const parts = jwt.split('.');
+    if (parts.length < 2) {
+      return null;
+    }
+
+    try {
+      const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const paddedPayload =
+        payloadBase64.length % 4 === 0 ? payloadBase64 : payloadBase64.padEnd(payloadBase64.length + (4 - (payloadBase64.length % 4)), '=');
+      const decoded = atob(paddedPayload);
+      const payload = JSON.parse(decoded) as { role?: unknown };
+      const roleValue = payload?.role;
+      if (roleValue === 'buyer' || roleValue === 'professional') {
+        return roleValue;
+      }
+    } catch {
+      return null;
+    }
+
     return null;
-  });
+  }, []);
+
   const [token, setTokenState] = useState<string | null>(() => localStorage.getItem('cronox.token'));
+  const [role, setRoleState] = useState<UserRole>(() => resolveRoleFromToken(localStorage.getItem('cronox.token')));
   const [isAuthenticated, setAuthenticatedState] = useState(Boolean(localStorage.getItem('cronox.token')));
 
   const setRole = useCallback((nextRole: UserRole) => {
-    setRoleState(nextRole);
-    if (nextRole) {
-      localStorage.setItem('cronox.role', nextRole);
-    } else {
-      localStorage.removeItem('cronox.role');
+    if (token) {
+      return;
     }
-  }, []);
+    setRoleState(nextRole);
+  }, [token]);
 
   const setAuthenticated = useCallback((auth: boolean) => {
     setAuthenticatedState(auth);
     if (!auth) {
       localStorage.removeItem('cronox.token');
       setTokenState(null);
+      setRoleState(null);
     }
   }, []);
 
@@ -47,17 +67,18 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (nextToken) {
       localStorage.setItem('cronox.token', nextToken);
       setAuthenticatedState(true);
+      setRoleState(resolveRoleFromToken(nextToken));
     } else {
       localStorage.removeItem('cronox.token');
       setAuthenticatedState(false);
+      setRoleState(null);
     }
-  }, []);
+  }, [resolveRoleFromToken]);
 
   const logout = useCallback(() => {
     setRoleState(null);
     setTokenState(null);
     setAuthenticatedState(false);
-    localStorage.removeItem('cronox.role');
     localStorage.removeItem('cronox.token');
   }, []);
 

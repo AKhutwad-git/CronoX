@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 
-export type SessionStatus = 'available' | 'booked' | 'completed' | 'paid' | 'pending';
+export type SessionStatus = 'available' | 'booked' | 'completed' | 'paid' | 'pending' | 'active';
 
 interface StatusBadgeProps {
   status: SessionStatus;
@@ -15,6 +15,10 @@ const statusConfig: Record<SessionStatus, { label: string; className: string }> 
   booked: {
     label: 'Booked',
     className: 'bg-blue-50 text-blue-700 border-blue-200',
+  },
+  active: {
+    label: 'Started',
+    className: 'bg-indigo-50 text-indigo-700 border-indigo-200',
   },
   completed: {
     label: 'Completed',
@@ -45,6 +49,7 @@ export const StatusBadge = ({ status, className }: StatusBadgeProps) => {
         'w-1.5 h-1.5 rounded-full mr-1.5',
         status === 'available' && 'bg-emerald-500',
         status === 'booked' && 'bg-blue-500',
+        status === 'active' && 'bg-indigo-500',
         status === 'completed' && 'bg-green-500',
         status === 'paid' && 'bg-amber-500',
         status === 'pending' && 'bg-slate-400',

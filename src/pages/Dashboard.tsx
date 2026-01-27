@@ -6,6 +6,9 @@ import { StatusBadge, type SessionStatus } from '@/components/ui/StatusBadge';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { getBookings, getPayments } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
 import { 
   Clock, 
   Calendar, 
@@ -54,6 +57,136 @@ const Dashboard = () => {
 };
 
 const ProfessionalDashboard = () => {
+  const { token } = useRole();
+  const { toast } = useToast();
+  const [bookings, setBookings] = useState<
+    Array<{
+      id: string;
+      scheduledAt: string;
+      status: 'scheduled' | 'completed' | 'cancelled';
+      token?: { price?: number };
+      session?: { id: string; status: 'pending' | 'active' | 'completed' | 'failed' };
+    }>
+  >([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [payments, setPayments] = useState<
+    Array<{
+      id: string;
+      sessionId: string;
+      amount: number;
+      status: 'pending' | 'settled' | 'failed';
+      createdAt?: string;
+      settledAt?: string;
+    }>
+  >([]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const load = async (showLoading: boolean, showToast: boolean) => {
+      if (!token) {
+        if (isMounted) {
+          setBookings([]);
+          setPayments([]);
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      try {
+        if (showLoading) {
+          setIsLoading(true);
+        }
+        const [bookingData, paymentData] = await Promise.all([getBookings(token), getPayments(token)]);
+        if (isMounted) {
+          setBookings(Array.isArray(bookingData) ? bookingData : []);
+          setPayments(Array.isArray(paymentData) ? paymentData : []);
+        }
+      } catch (err: unknown) {
+        if (!isMounted) {
+          return;
+        }
+        if (showToast) {
+          const message = err instanceof Error ? err.message : 'Please try again in a moment.';
+          toast({
+            title: 'Unable to load sessions',
+            description: message,
+            variant: 'destructive',
+          });
+        }
+      } finally {
+        if (isMounted && showLoading) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    load(true, true);
+    const interval = window.setInterval(() => {
+      load(false, false);
+    }, 15000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+    };
+  }, [token, toast]);
+
+  const resolveSessionStatus = useCallback(
+    (booking: { status: string; session?: { status?: string } }) =>
+      booking.session?.status ?? (booking.status === 'completed' ? 'completed' : 'pending'),
+    []
+  );
+
+  const upcomingSessions = useMemo(
+    () => bookings.filter((booking) => ['pending', 'active'].includes(resolveSessionStatus(booking))),
+    [bookings, resolveSessionStatus]
+  );
+  const completedSessions = useMemo(
+    () => bookings.filter((booking) => ['completed', 'failed'].includes(resolveSessionStatus(booking))),
+    [bookings, resolveSessionStatus]
+  );
+  const paymentsBySessionId = useMemo(() => {
+    const map = new Map<string, { buyer?: { email?: string }; scheduledAt?: string; token?: { durationMinutes?: number } }>();
+    bookings.forEach((booking) => {
+      if (booking.session?.id) {
+        map.set(booking.session.id, {
+          buyer: booking.buyer,
+          scheduledAt: booking.scheduledAt,
+          token: booking.token,
+        });
+      }
+    });
+    return map;
+  }, [bookings]);
+  const pendingPayout = useMemo(
+    () => payments.filter((payment) => payment.status === 'pending').reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
+    [payments]
+  );
+  const currentMonthEarnings = useMemo(() => {
+    const now = new Date();
+    return payments.reduce((sum, payment) => {
+      const dateValue = payment.settledAt ?? payment.createdAt;
+      if (!dateValue) {
+        return sum;
+      }
+      const date = new Date(dateValue);
+      if (date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear()) {
+        return sum + Number(payment.amount || 0);
+      }
+      return sum;
+    }, 0);
+  }, [payments]);
+  const recentPayments = useMemo(() => {
+    return [...payments]
+      .sort((a, b) => {
+        const dateA = a.settledAt ?? a.createdAt ?? '';
+        const dateB = b.settledAt ?? b.createdAt ?? '';
+        return new Date(dateB).getTime() - new Date(dateA).getTime();
+      })
+      .slice(0, 3);
+  }, [payments]);
+
   return (
     <div className="space-y-8">
       {/* Quick Actions */}
@@ -94,14 +227,18 @@ const ProfessionalDashboard = () => {
             )
           },
           { 
-            title: 'Active Listings', 
+            title: 'Pending Payout', 
             icon: Calendar, 
             color: 'text-status-booked',
             bgColor: 'bg-status-booked/10',
             content: (
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Session listings count will appear here</p>
-                <p className="text-xs text-muted-foreground italic">Shows the number of active session offerings currently visible in the marketplace.</p>
+                {isLoading ? (
+                  <span className="text-2xl font-bold text-foreground">—</span>
+                ) : (
+                  <PriceDisplay amount={pendingPayout} size="lg" />
+                )}
+                <p className="text-xs text-muted-foreground italic mt-1">Payments awaiting settlement.</p>
               </div>
             )
           },
@@ -112,8 +249,12 @@ const ProfessionalDashboard = () => {
             bgColor: 'bg-accent/10',
             content: (
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Earnings summary will appear here</p>
-                <p className="text-xs text-muted-foreground italic">Displays total earnings in INR for the current month from completed sessions.</p>
+                {isLoading ? (
+                  <span className="text-2xl font-bold text-foreground">—</span>
+                ) : (
+                  <PriceDisplay amount={currentMonthEarnings} size="lg" />
+                )}
+                <p className="text-xs text-muted-foreground italic mt-1">Total earnings this month.</p>
               </div>
             )
           },
@@ -124,7 +265,9 @@ const ProfessionalDashboard = () => {
             bgColor: 'bg-cronox-amber/10',
             content: (
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Upcoming count will appear here</p>
+                <p className="text-2xl font-bold text-foreground mb-1">
+                  {isLoading ? '—' : upcomingSessions.length}
+                </p>
                 <p className="text-xs text-muted-foreground italic">Number of booked sessions scheduled for the coming week.</p>
               </div>
             )
@@ -147,6 +290,67 @@ const ProfessionalDashboard = () => {
           </motion.div>
         ))}
       </div>
+
+      <motion.div
+        className="card-elevated p-6 lg:p-8"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
+      >
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="font-display text-xl font-bold text-foreground">
+            Recent Payments
+          </h2>
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/earnings">
+              View All
+              <ArrowRight size={16} className="ml-1" />
+            </Link>
+          </Button>
+        </div>
+
+        {isLoading ? (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <Wallet className="mx-auto text-muted-foreground/50 mb-3" size={32} />
+            <p className="text-muted-foreground">Loading payments...</p>
+          </div>
+        ) : recentPayments.length > 0 ? (
+          <div className="space-y-3">
+            {recentPayments.map((payment) => {
+              const booking = paymentsBySessionId.get(payment.sessionId);
+              const sessionLabel = booking?.token?.durationMinutes
+                ? `${booking.token.durationMinutes} min session`
+                : `Session ${payment.sessionId.slice(0, 6).toUpperCase()}`;
+              const dateValue = payment.settledAt ?? payment.createdAt ?? booking?.scheduledAt;
+              const statusBadge =
+                payment.status === 'settled' ? 'paid' : payment.status === 'pending' ? 'pending' : null;
+              return (
+                <div key={payment.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-border p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{sessionLabel}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {booking?.buyer?.email || 'Buyer'} · {dateValue ? new Date(dateValue).toLocaleDateString() : '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <PriceDisplay amount={Number(payment.amount)} size="sm" />
+                    {statusBadge ? (
+                      <StatusBadge status={statusBadge} />
+                    ) : (
+                      <span className="text-xs font-medium text-foreground">Failed</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <Wallet className="mx-auto text-muted-foreground/50 mb-3" size={32} />
+            <p className="text-muted-foreground">No payments yet</p>
+          </div>
+        )}
+      </motion.div>
 
       {/* Pricing Insight Section */}
       <motion.div
@@ -223,7 +427,13 @@ const ProfessionalDashboard = () => {
                 <StatusBadge status={item.status} />
               </div>
               <p className="text-xs text-muted-foreground">{item.desc}</p>
-              <p className="text-xs text-muted-foreground italic mt-2">Count will appear here</p>
+              <p className="text-xs text-muted-foreground italic mt-2">
+                {item.status === 'booked'
+                  ? `${isLoading ? '—' : upcomingSessions.length} booked`
+                  : item.status === 'completed'
+                  ? `${isLoading ? '—' : completedSessions.length} completed`
+                  : 'Count will appear here'}
+              </p>
             </div>
           ))}
         </div>
@@ -246,6 +456,122 @@ const ProfessionalDashboard = () => {
 };
 
 const BuyerDashboard = () => {
+  const { token } = useRole();
+  const { toast } = useToast();
+  const [bookings, setBookings] = useState<
+    Array<{
+      id: string;
+      scheduledAt: string;
+      status: 'scheduled' | 'completed' | 'cancelled';
+      token?: { price?: number; professional?: { user?: { email?: string } } };
+      session?: { id: string; status: 'pending' | 'active' | 'completed' | 'failed' };
+    }>
+  >([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [payments, setPayments] = useState<
+    Array<{
+      id: string;
+      sessionId: string;
+      amount: number;
+      status: 'pending' | 'settled' | 'failed';
+      createdAt?: string;
+      settledAt?: string;
+    }>
+  >([]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const load = async (showLoading: boolean, showToast: boolean) => {
+      if (!token) {
+        if (isMounted) {
+          setBookings([]);
+          setPayments([]);
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      try {
+        if (showLoading) {
+          setIsLoading(true);
+        }
+        const [bookingData, paymentData] = await Promise.all([getBookings(token), getPayments(token)]);
+        if (isMounted) {
+          setBookings(Array.isArray(bookingData) ? bookingData : []);
+          setPayments(Array.isArray(paymentData) ? paymentData : []);
+        }
+      } catch (err: unknown) {
+        if (!isMounted) {
+          return;
+        }
+        if (showToast) {
+          const message = err instanceof Error ? err.message : 'Please try again in a moment.';
+          toast({
+            title: 'Unable to load sessions',
+            description: message,
+            variant: 'destructive',
+          });
+        }
+      } finally {
+        if (isMounted && showLoading) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    load(true, true);
+    const interval = window.setInterval(() => {
+      load(false, false);
+    }, 15000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+    };
+  }, [token, toast]);
+
+  const resolveSessionStatus = useCallback(
+    (booking: { status: string; session?: { status?: string } }) =>
+      booking.session?.status ?? (booking.status === 'completed' ? 'completed' : 'pending'),
+    []
+  );
+
+  const upcomingSessions = useMemo(
+    () => bookings.filter((booking) => ['pending', 'active'].includes(resolveSessionStatus(booking))),
+    [bookings, resolveSessionStatus]
+  );
+  const completedSessions = useMemo(
+    () => bookings.filter((booking) => ['completed', 'failed'].includes(resolveSessionStatus(booking))),
+    [bookings, resolveSessionStatus]
+  );
+  const paymentsBySessionId = useMemo(() => {
+    const map = new Map<string, { professional?: { user?: { email?: string } }; scheduledAt?: string; token?: { durationMinutes?: number } }>();
+    bookings.forEach((booking) => {
+      if (booking.session?.id) {
+        map.set(booking.session.id, {
+          professional: booking.token?.professional,
+          scheduledAt: booking.scheduledAt,
+          token: booking.token,
+        });
+      }
+    });
+    return map;
+  }, [bookings]);
+  const totalSpent = useMemo(
+    () => payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
+    [payments]
+  );
+  const recentPayments = useMemo(() => {
+    return [...payments]
+      .sort((a, b) => {
+        const dateA = a.settledAt ?? a.createdAt ?? '';
+        const dateB = b.settledAt ?? b.createdAt ?? '';
+        return new Date(dateB).getTime() - new Date(dateA).getTime();
+      })
+      .slice(0, 3);
+  }, [payments]);
+
   return (
     <div className="space-y-8">
       {/* Quick Actions */}
@@ -280,7 +606,9 @@ const BuyerDashboard = () => {
             bgColor: 'bg-status-booked/10',
             content: (
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Session count will appear here</p>
+                <p className="text-2xl font-bold text-foreground mb-1">
+                  {isLoading ? '—' : upcomingSessions.length}
+                </p>
                 <p className="text-xs text-muted-foreground italic">Shows booked sessions scheduled in the coming days.</p>
               </div>
             )
@@ -292,7 +620,9 @@ const BuyerDashboard = () => {
             bgColor: 'bg-status-completed/10',
             content: (
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Completed count will appear here</p>
+                <p className="text-2xl font-bold text-foreground mb-1">
+                  {isLoading ? '—' : completedSessions.length}
+                </p>
                 <p className="text-xs text-muted-foreground italic">Total sessions you've attended with experts.</p>
               </div>
             )
@@ -304,7 +634,9 @@ const BuyerDashboard = () => {
             bgColor: 'bg-cronox-amber/10',
             content: (
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Amount in INR will appear here</p>
+                <p className="text-2xl font-bold text-foreground mb-1">
+                  {isLoading ? '—' : `₹ ${totalSpent.toFixed(0)}`}
+                </p>
                 <p className="text-xs text-muted-foreground italic">Total amount spent on session bookings.</p>
               </div>
             )
@@ -347,18 +679,108 @@ const BuyerDashboard = () => {
           </Button>
         </div>
 
-        <div className="text-center py-8 border border-dashed border-border rounded-xl">
-          <Calendar className="mx-auto text-muted-foreground/50 mb-3" size={32} />
-          <p className="text-muted-foreground mb-4">
-            Your booked sessions will appear here
-          </p>
-          <Button asChild size="sm">
-            <Link to="/marketplace">
-              <Users size={16} className="mr-1" />
-              Browse Experts
+        {isLoading ? (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <Calendar className="mx-auto text-muted-foreground/50 mb-3" size={32} />
+            <p className="text-muted-foreground mb-4">
+              Loading your sessions...
+            </p>
+          </div>
+        ) : upcomingSessions.length > 0 ? (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {upcomingSessions.slice(0, 3).map((booking) => (
+              <div key={booking.id} className="bg-secondary/50 rounded-xl p-5 border border-border">
+                <div className="flex items-center justify-between mb-2">
+                  <StatusBadge status={booking.session?.status === 'active' ? 'active' : 'pending'} />
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(booking.scheduledAt).toLocaleString()}
+                  </span>
+                </div>
+                <p className="text-sm font-medium text-foreground">
+                  {booking.token?.professional?.user?.email || 'Professional'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Status: {booking.session?.status === 'active' ? 'Started' : 'Scheduled'}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <Calendar className="mx-auto text-muted-foreground/50 mb-3" size={32} />
+            <p className="text-muted-foreground mb-4">
+              Your booked sessions will appear here
+            </p>
+            <Button asChild size="sm">
+              <Link to="/marketplace">
+                <Users size={16} className="mr-1" />
+                Browse Experts
+              </Link>
+            </Button>
+          </div>
+        )}
+      </motion.div>
+
+      <motion.div
+        className="card-elevated p-6 lg:p-8"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35 }}
+      >
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="font-display text-xl font-bold text-foreground">
+            Recent Payments
+          </h2>
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/earnings">
+              View All
+              <ArrowRight size={16} className="ml-1" />
             </Link>
           </Button>
         </div>
+
+        {isLoading ? (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <Wallet className="mx-auto text-muted-foreground/50 mb-3" size={32} />
+            <p className="text-muted-foreground">Loading payments...</p>
+          </div>
+        ) : recentPayments.length > 0 ? (
+          <div className="space-y-3">
+            {recentPayments.map((payment) => {
+              const booking = paymentsBySessionId.get(payment.sessionId);
+              const sessionLabel = booking?.token?.durationMinutes
+                ? `${booking.token.durationMinutes} min session`
+                : `Session ${payment.sessionId.slice(0, 6).toUpperCase()}`;
+              const counterparty = booking?.professional?.user?.email || 'Professional';
+              const dateValue = payment.settledAt ?? payment.createdAt ?? booking?.scheduledAt;
+              const statusBadge =
+                payment.status === 'settled' ? 'paid' : payment.status === 'pending' ? 'pending' : null;
+              return (
+                <div key={payment.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-border p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{sessionLabel}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {counterparty} · {dateValue ? new Date(dateValue).toLocaleDateString() : '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <PriceDisplay amount={Number(payment.amount)} size="sm" />
+                    {statusBadge ? (
+                      <StatusBadge status={statusBadge} />
+                    ) : (
+                      <span className="text-xs font-medium text-foreground">Failed</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <Wallet className="mx-auto text-muted-foreground/50 mb-3" size={32} />
+            <p className="text-muted-foreground">No payments yet</p>
+          </div>
+        )}
       </motion.div>
 
       {/* Featured Experts */}

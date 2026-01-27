@@ -41,7 +41,7 @@ export const config = {
         expiresIn: (process.env.JWT_EXPIRES_IN || '1h') as string,
     },
     server: {
-        port: parseInt(process.env.PORT || '3000', 10),
+        port: parseInt(process.env.PORT || '4000', 10),
         nodeEnv: process.env.NODE_ENV || 'development',
     },
 } as const;

@@ -3,6 +3,7 @@ import { AuthenticatedRequest } from '../../middleware/auth.middleware';
 import prisma from '../../lib/prisma';
 import { SessionRepository } from './session.repository';
 import { ProfessionalRepository } from '../users/professional.repository';
+import { logger } from '../../lib/logger';
 
 const sessionRepository = new SessionRepository();
 const professionalRepository = new ProfessionalRepository();
@@ -17,6 +18,9 @@ export const getSessions = async (req: AuthenticatedRequest, res: Response) => {
     try {
         if (user.role === 'admin') {
             const sessions = await sessionRepository.findAll();
+            if (sessions.length === 0) {
+                logger.warn('[sessions] sessions empty', { userId: user.userId, role: user.role });
+            }
             return res.json(sessions);
         }
 
@@ -29,6 +33,9 @@ export const getSessions = async (req: AuthenticatedRequest, res: Response) => {
             const sessions = await prisma.session.findMany({
                 where: { professionalId: professional.id }
             });
+            if (sessions.length === 0) {
+                logger.warn('[sessions] sessions empty', { userId: user.userId, role: user.role });
+            }
             return res.json(sessions);
         }
 
@@ -39,15 +46,23 @@ export const getSessions = async (req: AuthenticatedRequest, res: Response) => {
                 }
             }
         });
+        if (sessions.length === 0) {
+            logger.warn('[sessions] sessions empty', { userId: user.userId, role: user.role });
+        }
         return res.json(sessions);
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
+        logger.error('[sessions] sessions fetch failed', error);
         res.status(500).json({ message: 'Error fetching sessions', error: message });
     }
 };
 
 // Start a session
 export const startSession = async (req: AuthenticatedRequest, res: Response) => {
+    const user = req.user;
+    if (!user) {
+        return res.status(401).json({ message: 'Unauthorized' });
+    }
     const idParam = req.params.id;
     const id = Array.isArray(idParam) ? idParam[0] : idParam;
     if (!id) {
@@ -60,6 +75,16 @@ export const startSession = async (req: AuthenticatedRequest, res: Response) => 
             return res.status(404).json({ message: 'Session not found' });
         }
 
+        if (user.role === 'professional') {
+            const professional = await professionalRepository.findByUserId(user.userId);
+            if (!professional) {
+                return res.status(404).json({ message: 'Professional profile not found' });
+            }
+            if (session.professionalId !== professional.id) {
+                return res.status(403).json({ message: 'Forbidden: You do not own this session' });
+            }
+        }
+
         if (session.status !== 'pending') {
             return res.status(400).json({ message: 'Session must be pending to start' });
         }
@@ -69,15 +94,21 @@ export const startSession = async (req: AuthenticatedRequest, res: Response) => 
             startedAt: new Date()
         });
 
+        logger.info('[sessions] session started', { sessionId: id });
         res.json(updated);
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
+        logger.error('[sessions] session start failed', error);
         res.status(500).json({ message: 'Error starting session', error: message });
     }
 };
 
 // End a session
 export const endSession = async (req: AuthenticatedRequest, res: Response) => {
+    const user = req.user;
+    if (!user) {
+        return res.status(401).json({ message: 'Unauthorized' });
+    }
     const idParam = req.params.id;
     const id = Array.isArray(idParam) ? idParam[0] : idParam;
     if (!id) {
@@ -95,14 +126,26 @@ export const endSession = async (req: AuthenticatedRequest, res: Response) => {
             return res.status(404).json({ message: 'Session not found' });
         }
 
+        if (user.role === 'professional') {
+            const professional = await professionalRepository.findByUserId(user.userId);
+            if (!professional) {
+                return res.status(404).json({ message: 'Professional profile not found' });
+            }
+            if (session.professionalId !== professional.id) {
+                return res.status(403).json({ message: 'Forbidden: You do not own this session' });
+            }
+        }
+
         if (session.status !== 'active') {
             return res.status(400).json({ message: 'Session is not active' });
         }
 
         const updated = await sessionRepository.updateSessionStatus(id, status);
+        logger.info('[sessions] session ended', { sessionId: id, status });
         res.json(updated);
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
+        logger.error('[sessions] session end failed', error);
         res.status(500).json({ message: 'Error ending session', error: message });
     }
 };

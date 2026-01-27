@@ -1,8 +1,6 @@
 import prisma from '../../lib/prisma';
 import { BaseRepository, RepositoryModel } from '../../lib/base-repository';
 import { Prisma, Session, SessionStatus } from '@prisma/client';
-import { processSettlement } from '../payments/payment.controller'; // Ensure this doesn't cause cycle if controller imports repo.
-// session.repository -> payment.controller -> payment.repo. Safe.
 
 export interface CreateSessionData {
   bookingId: string;
@@ -30,7 +28,31 @@ export class SessionRepository extends BaseRepository<
   }
 
   async createWithValidation(data: CreateSessionData) {
-    // Basic creation
+    if (data.startTime >= data.endTime) {
+      throw new Error('Session startTime must be before endTime');
+    }
+
+    const booking = await prisma.booking.findUnique({
+      where: { id: data.bookingId },
+      include: { token: true }
+    });
+
+    if (!booking) {
+      throw new Error('Booking not found');
+    }
+
+    if (booking.token.professionalId !== data.professionalId) {
+      throw new Error('Professional does not match booking token');
+    }
+
+    const existing = await prisma.session.findUnique({
+      where: { bookingId: data.bookingId }
+    });
+
+    if (existing) {
+      throw new Error('Session already exists for booking');
+    }
+
     return this.create({
       booking: { connect: { id: data.bookingId } },
       professional: { connect: { id: data.professionalId } },

@@ -4,6 +4,6 @@ import { authenticate } from '../../middleware/auth.middleware';
 
 const router = Router();
 
-router.get('/payments', authenticate, getPayments);
+router.get('/', authenticate, getPayments);
 
 export default router;

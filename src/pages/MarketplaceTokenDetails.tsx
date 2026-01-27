@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
 import { StatusBadge, type SessionStatus } from '@/components/ui/StatusBadge';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { User, Clock, ArrowLeft, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { apiRequest } from '@/lib/api';
+import { useRole } from '@/contexts/RoleContext';
+import { apiRequest, createBooking, endSession, getBookings, purchaseMarketplaceToken, startSession } from '@/lib/api';
 
 type TokenDetails = {
   id: string;
@@ -24,12 +26,34 @@ type TokenDetails = {
   };
 };
 
+type BookingDetails = {
+  id: string;
+  scheduledAt: string;
+  status: 'scheduled' | 'completed' | 'cancelled';
+  token?: {
+    id: string;
+  };
+  session?: {
+    id: string;
+    status?: 'pending' | 'active' | 'completed' | 'failed';
+    startedAt?: string;
+    endedAt?: string;
+  };
+};
+
 const MarketplaceTokenDetails = () => {
   const { id } = useParams();
   const { toast } = useToast();
+  const { role, token: authToken } = useRole();
   const [token, setToken] = useState<TokenDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isPurchasing, setIsPurchasing] = useState(false);
+  const [booking, setBooking] = useState<BookingDetails | null>(null);
+  const [bookingDate, setBookingDate] = useState('');
+  const [bookingTime, setBookingTime] = useState('');
+  const [isBookingLoading, setIsBookingLoading] = useState(false);
+  const [isBookingSubmitting, setIsBookingSubmitting] = useState(false);
 
   const status = useMemo<SessionStatus>(() => {
     if (!token?.state) return 'pending';
@@ -38,6 +62,25 @@ const MarketplaceTokenDetails = () => {
     if (token.state === 'consumed') return 'completed';
     return 'pending';
   }, [token?.state]);
+
+  const fetchToken = useCallback(async () => {
+    if (!id) {
+      return null;
+    }
+    const data = await apiRequest<TokenDetails>(`/marketplace/tokens/${id}`);
+    setToken(data ?? null);
+    return data ?? null;
+  }, [id]);
+
+  const fetchBooking = useCallback(async () => {
+    if (!authToken || role !== 'buyer' || !id) {
+      return null;
+    }
+
+    const data = await getBookings();
+    const bookings = Array.isArray(data) ? (data as BookingDetails[]) : [];
+    return bookings.find((item) => item.token?.id === id) ?? null;
+  }, [authToken, id, role]);
 
   useEffect(() => {
     console.log('[marketplace] details route mount', { id });
@@ -50,9 +93,8 @@ const MarketplaceTokenDetails = () => {
     const loadToken = async () => {
       console.log('[marketplace] details fetch start', { id });
       try {
-        const data = await apiRequest<TokenDetails>(`/marketplace/tokens/${id}`);
+        const data = await fetchToken();
         console.log('[marketplace] details fetch success', { id });
-        setToken(data ?? null);
         setError(null);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Unable to load session details.';
@@ -69,7 +111,259 @@ const MarketplaceTokenDetails = () => {
     };
 
     loadToken();
-  }, [id, toast]);
+  }, [fetchToken, id, toast]);
+
+  useEffect(() => {
+    if (!authToken || role !== 'buyer' || !id) {
+      setBooking(null);
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadBookings = async () => {
+      try {
+        setIsBookingLoading(true);
+        const matched = await fetchBooking();
+        if (isMounted) {
+          setBooking(matched);
+        }
+      } catch (err: unknown) {
+        if (!isMounted) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'Unable to load booking details.';
+        toast({
+          title: 'Unable to load booking',
+          description: message,
+          variant: 'destructive',
+        });
+      } finally {
+        if (isMounted) {
+          setIsBookingLoading(false);
+        }
+      }
+    };
+
+    loadBookings();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authToken, fetchBooking, id, role, toast]);
+
+  const isPurchasable = role === 'buyer' && token?.state === 'listed';
+  const purchaseLabel =
+    token?.state === 'listed' ? 'Purchase Token' : token?.state === 'purchased' ? 'Purchased' : 'Not Available';
+
+  const handlePurchase = async () => {
+    if (!id || !token) {
+      return;
+    }
+
+    if (role !== 'buyer') {
+      toast({
+        title: 'Buyer account required',
+        description: 'Only buyers can purchase session tokens.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!authToken) {
+      toast({
+        title: 'Sign in required',
+        description: 'Please sign in as a buyer to purchase this token.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (token.state !== 'listed') {
+      toast({
+        title: 'Session unavailable',
+        description: 'This token is no longer available for purchase.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (isPurchasing) {
+      return;
+    }
+
+    try {
+      setIsPurchasing(true);
+      const response = await purchaseMarketplaceToken(id);
+      const nextToken =
+        response && typeof response === 'object' && 'token' in response
+          ? (response as { token?: TokenDetails }).token
+          : undefined;
+
+      setToken((current) => {
+        if (!current) {
+          return nextToken ?? null;
+        }
+        return {
+          ...current,
+          ...(nextToken ?? {}),
+          state: nextToken?.state ?? 'purchased',
+        };
+      });
+
+      toast({
+        title: 'Purchase successful',
+        description: 'This session token is now yours.',
+      });
+      await fetchToken();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to purchase this token.';
+      toast({
+        title: 'Purchase failed',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsPurchasing(false);
+    }
+  };
+
+  const canBook = role === 'buyer' && token?.state === 'purchased' && !booking;
+
+  const handleBooking = async () => {
+    if (!token || !id) {
+      return;
+    }
+
+    if (role !== 'buyer') {
+      toast({
+        title: 'Buyer account required',
+        description: 'Only buyers can book sessions.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!authToken) {
+      toast({
+        title: 'Sign in required',
+        description: 'Please sign in as a buyer to book this session.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!bookingDate || !bookingTime) {
+      toast({
+        title: 'Missing details',
+        description: 'Please select a date and time to book this session.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const scheduledAt = new Date(`${bookingDate}T${bookingTime}`);
+    if (Number.isNaN(scheduledAt.getTime())) {
+      toast({
+        title: 'Invalid date',
+        description: 'Please select a valid date and time.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (scheduledAt.getTime() <= Date.now()) {
+      toast({
+        title: 'Choose a future time',
+        description: 'Booking times must be in the future.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (isBookingSubmitting) {
+      return;
+    }
+
+    try {
+      setIsBookingSubmitting(true);
+      const response = await createBooking(id, scheduledAt.toISOString());
+      const nextBooking =
+        response && typeof response === 'object' && 'booking' in response
+          ? (response as { booking?: BookingDetails }).booking
+          : undefined;
+      const bookingId =
+        response && typeof response === 'object' && 'bookingId' in response
+          ? (response as { bookingId?: string }).bookingId
+          : nextBooking?.id;
+      const sessionId =
+        response && typeof response === 'object' && 'sessionId' in response
+          ? (response as { sessionId?: string }).sessionId
+          : response && typeof response === 'object' && 'session' in response
+            ? (response as { session?: { id?: string } }).session?.id
+            : nextBooking?.session?.id;
+      const baseBooking =
+        nextBooking ?? {
+          id: bookingId ?? id,
+          scheduledAt: scheduledAt.toISOString(),
+          status: 'scheduled',
+          token: { id },
+          session: sessionId ? { id: sessionId } : undefined,
+        };
+      setBooking(baseBooking);
+      toast({
+        title: 'Booking confirmed',
+        description: 'Your session is scheduled and ready.',
+      });
+
+      if (sessionId) {
+        try {
+          const started = await startSession(sessionId);
+          const ended = await endSession(sessionId, 'completed');
+          setBooking((current) => {
+            const bookingState = current ?? baseBooking;
+            const sessionState = {
+              ...bookingState.session,
+              ...(started as BookingDetails['session']),
+              ...(ended as BookingDetails['session']),
+              id: sessionId,
+              status:
+                (ended as BookingDetails['session'])?.status ??
+                (started as BookingDetails['session'])?.status ??
+                'completed',
+            };
+            return {
+              ...bookingState,
+              session: sessionState,
+              status: 'completed',
+            };
+          });
+          setToken((current) => (current ? { ...current, state: 'consumed' } : current));
+          await fetchToken();
+          const refreshed = await fetchBooking();
+          if (refreshed) {
+            setBooking(refreshed);
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Unable to update the session status.';
+          toast({
+            title: 'Session update failed',
+            description: message,
+            variant: 'destructive',
+          });
+        }
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to book this session.';
+      toast({
+        title: 'Booking failed',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsBookingSubmitting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -135,6 +429,80 @@ const MarketplaceTokenDetails = () => {
               <p>Token ID: {token.id}</p>
               {token.createdAt && <p>Created: {new Date(token.createdAt).toLocaleString()}</p>}
             </div>
+
+            {role === 'buyer' && (
+              <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-t border-border pt-6">
+                <p className="text-sm text-muted-foreground">
+                  {token.state === 'listed'
+                    ? 'Ready to purchase this session token.'
+                    : 'This session token is no longer available for purchase.'}
+                </p>
+                <Button
+                  onClick={handlePurchase}
+                  disabled={!isPurchasable || isPurchasing}
+                  className="bg-status-booked hover:bg-status-booked/90 text-white"
+                >
+                  {isPurchasing ? (
+                    <>
+                      <Loader2 className="mr-2 animate-spin" size={16} />
+                      Processing Purchase
+                    </>
+                  ) : (
+                    purchaseLabel
+                  )}
+                </Button>
+              </div>
+            )}
+
+            {role === 'buyer' && token.state === 'purchased' && (
+              <div className="mt-6 rounded-xl border border-border p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-foreground">Book this session</h3>
+                  {booking && (
+                    <span className="text-xs text-muted-foreground">
+                      Scheduled for {new Date(booking.scheduledAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+                  <Input
+                    type="date"
+                    value={bookingDate}
+                    onChange={(event) => setBookingDate(event.target.value)}
+                    disabled={!canBook || isBookingLoading}
+                  />
+                  <Input
+                    type="time"
+                    value={bookingTime}
+                    onChange={(event) => setBookingTime(event.target.value)}
+                    disabled={!canBook || isBookingLoading}
+                  />
+                  <Button
+                    onClick={handleBooking}
+                    disabled={!canBook || isBookingSubmitting || isBookingLoading}
+                    className="bg-status-booked hover:bg-status-booked/90 text-white"
+                  >
+                    {isBookingSubmitting ? (
+                      <>
+                        <Loader2 className="mr-2 animate-spin" size={16} />
+                        Booking
+                      </>
+                    ) : booking ? (
+                      'Session Booked'
+                    ) : (
+                      'Book Session'
+                    )}
+                  </Button>
+                </div>
+                {!canBook && (
+                  <p className="text-xs text-muted-foreground mt-3">
+                    {booking
+                      ? 'This token has already been booked.'
+                      : 'Complete purchase to unlock booking.'}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="card-elevated p-8 text-center">

@@ -2,6 +2,7 @@
 import 'dotenv/config';
 
 import express from 'express';
+import net from 'net';
 import cors from 'cors';
 import { config } from './lib/config';
 import { logger } from './lib/logger';
@@ -16,6 +17,7 @@ import paymentRoutes from './services/payments/payment.routes';
 import pricingRoutes from './services/pricing/pricing.routes';
 import metricsRoutes from './services/metrics/metrics.routes';
 import auditingRoutes from './services/auditing/auditing.routes';
+import sessionRoutes from './services/scheduling/session.routes';
 
 const app = express();
 
@@ -34,6 +36,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/marketplace', marketplaceRoutes);
 app.use('/api/scheduling', schedulingRoutes);
+app.use('/api/scheduling', sessionRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/pricing', pricingRoutes);
 app.use('/api/metrics', metricsRoutes);
@@ -67,6 +70,25 @@ async function shutdown(signal: string): Promise<void> {
  */
 async function startServer(): Promise<void> {
   try {
+    await new Promise<void>((resolve, reject) => {
+      const tester = net
+        .createServer()
+        .once('error', (error: NodeJS.ErrnoException) => {
+          reject(error);
+        })
+        .once('listening', () => {
+          tester.close(() => resolve());
+        })
+        .listen(config.server.port);
+    }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        logger.error(`Fatal: Port ${config.server.port} is already in use.`);
+      } else {
+        logger.error('Fatal: Port availability check failed.', error);
+      }
+      process.exit(1);
+    });
+
     // Verify database connection before starting
     logger.info('Checking database connection...');
     await prisma.$connect();

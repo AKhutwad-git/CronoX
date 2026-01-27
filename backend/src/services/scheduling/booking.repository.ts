@@ -1,12 +1,12 @@
 import prisma from '../../lib/prisma';
 import { BaseRepository, RepositoryModel } from '../../lib/base-repository';
-import { Prisma, Booking } from '@prisma/client';
+import { Prisma, Booking, Session } from '@prisma/client';
 
 export interface CreateBookingData {
   timeTokenId: string;
   buyerId: string;
   professionalId: string;
-  scheduledAt?: Date;
+  scheduledAt: Date;
 }
 
 export class BookingRepository extends BaseRepository<
@@ -63,7 +63,15 @@ export class BookingRepository extends BaseRepository<
     });
   }
 
-  async createWithValidation(data: CreateBookingData) {
+  private async validateBookingData(data: CreateBookingData) {
+    if (!data.scheduledAt) {
+      throw new Error('scheduledAt is required');
+    }
+
+    if (data.scheduledAt <= new Date()) {
+      throw new Error('Scheduled time must be in the future');
+    }
+
     const timeToken = await prisma.timeToken.findUnique({
       where: { id: data.timeTokenId },
       include: { professional: true }
@@ -93,16 +101,22 @@ export class BookingRepository extends BaseRepository<
       throw new Error('Buyer not found');
     }
 
-    // data.scheduledAt is optional in interface but required in Schema?
-    // Schema: scheduledAt DateTime @map("scheduled_at") (No default)
-    // So distinct from createdAt. Must be provided.
-    // If interface says optional, we must fallback or throw.
-    if (!data.scheduledAt) {
-      throw new Error('scheduledAt is required');
+    if (buyer.role !== 'buyer') {
+      throw new Error('Valid buyer required');
     }
 
-    if (data.scheduledAt <= new Date()) {
-      throw new Error('Scheduled time must be in the future');
+    return timeToken;
+  }
+
+  async createWithValidation(data: CreateBookingData) {
+    await this.validateBookingData(data);
+
+    const existing = await prisma.booking.findUnique({
+      where: { tokenId: data.timeTokenId }
+    });
+
+    if (existing) {
+      throw new Error('Booking already exists for this token');
     }
 
     return this.create({
@@ -110,6 +124,83 @@ export class BookingRepository extends BaseRepository<
       buyer: { connect: { id: data.buyerId } },
       scheduledAt: data.scheduledAt,
       status: 'scheduled'
+    });
+  }
+
+  async createWithSession(data: CreateBookingData): Promise<{ booking: Booking; session: Session }> {
+    return prisma.$transaction(async (tx) => {
+      if (!data.scheduledAt) {
+        throw new Error('scheduledAt is required');
+      }
+
+      if (data.scheduledAt <= new Date()) {
+        throw new Error('Scheduled time must be in the future');
+      }
+
+      const timeToken = await tx.timeToken.findUnique({
+        where: { id: data.timeTokenId },
+        include: { professional: true }
+      });
+
+      if (!timeToken) {
+        throw new Error('Time token not found');
+      }
+
+      if (timeToken.state !== 'purchased') {
+        throw new Error('Time token must be purchased before booking');
+      }
+
+      if (timeToken.ownerId !== data.buyerId) {
+        throw new Error('Buyer does not own this time token');
+      }
+
+      if (timeToken.professionalId !== data.professionalId) {
+        throw new Error('Professional does not match time token owner');
+      }
+
+      const buyer = await tx.user.findUnique({
+        where: { id: data.buyerId }
+      });
+
+      if (!buyer) {
+        throw new Error('Buyer not found');
+      }
+
+      if (buyer.role !== 'buyer') {
+        throw new Error('Valid buyer required');
+      }
+
+      const existing = await tx.booking.findUnique({
+        where: { tokenId: data.timeTokenId }
+      });
+
+      if (existing) {
+        throw new Error('Booking already exists for this token');
+      }
+
+      const booking = await tx.booking.create({
+        data: {
+          token: { connect: { id: data.timeTokenId } },
+          buyer: { connect: { id: data.buyerId } },
+          scheduledAt: data.scheduledAt,
+          status: 'scheduled'
+        }
+      });
+
+      const startTime = data.scheduledAt;
+      const endTime = new Date(startTime.getTime() + timeToken.durationMinutes * 60000);
+
+      const session = await tx.session.create({
+        data: {
+          booking: { connect: { id: booking.id } },
+          professional: { connect: { id: timeToken.professionalId } },
+          startedAt: startTime,
+          endedAt: endTime,
+          status: 'pending'
+        }
+      });
+
+      return { booking, session };
     });
   }
 

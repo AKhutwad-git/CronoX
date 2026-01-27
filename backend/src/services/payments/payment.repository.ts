@@ -34,6 +34,22 @@ export class PaymentRepository extends BaseRepository<
   }
 
   async createWithValidation(data: CreatePaymentData) {
+    const session = await prisma.session.findUnique({
+      where: { id: data.sessionId }
+    });
+
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    const existing = await prisma.payment.findUnique({
+      where: { sessionId: data.sessionId }
+    });
+
+    if (existing) {
+      throw new Error('Payment already exists for session');
+    }
+
     return prisma.payment.create({
       data: {
         sessionId: data.sessionId,

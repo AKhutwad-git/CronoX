@@ -57,6 +57,8 @@ const Marketplace = () => {
     return 'pending';
   };
 
+  const listedTokens = tokens.filter((token) => token.state === 'listed');
+
   const handleViewDetails = (tokenId?: string) => {
     console.log('[marketplace] view details click', { tokenId });
     if (!tokenId) {
@@ -97,9 +99,9 @@ const Marketplace = () => {
             <Users className="mx-auto text-muted-foreground/50 mb-3" size={40} />
             <p className="text-muted-foreground">Loading listed sessions...</p>
           </div>
-        ) : tokens.length > 0 ? (
+        ) : listedTokens.length > 0 ? (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {tokens.map((token, index) => (
+            {listedTokens.map((token, index) => (
               <motion.div key={token.id || index} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
                 <SessionCard
                   professionalName={token.professional?.user?.email || 'Professional'}

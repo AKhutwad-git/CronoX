@@ -44,6 +44,15 @@ const buildHeaders = (init?: ApiRequestInit) => {
     headers.set("X-Correlation-ID", crypto.randomUUID());
   }
 
+  try {
+    const jwt = typeof localStorage !== "undefined" ? localStorage.getItem("cronox.token") : null;
+    if (jwt && !headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${jwt}`);
+    }
+  } catch (error) {
+    console.warn("[api] Unable to read auth token from storage.", error);
+  }
+
   return headers;
 };
 
@@ -94,6 +103,18 @@ export const apiRequest = async <TResponse>(path: string, init?: ApiRequestInit)
   const data = await parseResponse(response);
 
   if (!response.ok) {
+    if (response.status === 401) {
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.removeItem("cronox.token");
+        }
+        if (typeof window !== "undefined") {
+          window.location.assign("/signin");
+        }
+      } catch (error) {
+        console.warn("[api] Unable to clear auth state after 401 response.", error);
+      }
+    }
     const message =
       (data && typeof data === "object" && "message" in data
         ? (data as { message?: unknown }).message
@@ -120,3 +141,38 @@ export const apiRequest = async <TResponse>(path: string, init?: ApiRequestInit)
 
   return data as TResponse;
 };
+
+export const purchaseMarketplaceToken = async (tokenId: string) =>
+  apiRequest(`/marketplace/tokens/${tokenId}/purchase`, {
+    method: "POST",
+  });
+
+export const getBookings = async () =>
+  apiRequest(`/scheduling/bookings`, {
+  });
+
+export const createBooking = async (tokenId: string, scheduledAt: string) =>
+  apiRequest(`/scheduling/bookings`, {
+    method: "POST",
+    body: JSON.stringify({
+      tokenId,
+      scheduledAt,
+    }),
+  });
+
+export const getPayments = async () =>
+  apiRequest(`/payments`, {
+  });
+
+export const startSession = async (sessionId: string) =>
+  apiRequest(`/scheduling/sessions/${sessionId}/start`, {
+    method: "POST",
+  });
+
+export const endSession = async (sessionId: string, status: "completed" | "failed") =>
+  apiRequest(`/scheduling/sessions/${sessionId}/end`, {
+    method: "POST",
+    body: JSON.stringify({
+      status,
+    }),
+  });
