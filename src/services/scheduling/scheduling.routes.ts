@@ -1,0 +1,22 @@
+import { Router } from 'express';
+import {
+  createBooking,
+  createSession,
+  getBookings,
+  getSessions,
+  cancelBooking,
+  cancelSession,
+} from './scheduling.controller';
+import { authenticate } from '../../middleware/auth.middleware';
+import { authorize } from '../../middleware/role.middleware';
+
+const router = Router();
+
+router.get('/bookings', authenticate, getBookings);
+router.post('/bookings', authenticate, authorize(['buyer']), createBooking);
+router.delete('/bookings/:id', authenticate, cancelBooking);
+
+router.get('/sessions', authenticate, getSessions);
+router.delete('/sessions/:id', authenticate, cancelSession);
+
+export default router;

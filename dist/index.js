@@ -1,0 +1,32 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = __importDefault(require("express"));
+const cors_1 = __importDefault(require("cors"));
+const correlation_middleware_1 = require("./middleware/correlation.middleware");
+const auth_routes_1 = __importDefault(require("./services/users/auth.routes"));
+const user_routes_1 = __importDefault(require("./services/users/user.routes"));
+const marketplace_routes_1 = __importDefault(require("./services/marketplace/marketplace.routes"));
+const scheduling_routes_1 = __importDefault(require("./services/scheduling/scheduling.routes"));
+const payment_routes_1 = __importDefault(require("./services/payments/payment.routes"));
+const pricing_routes_1 = __importDefault(require("./services/pricing/pricing.routes"));
+const metrics_routes_1 = __importDefault(require("./services/metrics/metrics.routes"));
+const auditing_routes_1 = __importDefault(require("./services/auditing/auditing.routes"));
+const app = (0, express_1.default)();
+const port = 3000;
+app.use((0, cors_1.default)());
+app.use(express_1.default.json());
+app.use(correlation_middleware_1.correlationIdMiddleware);
+app.use('/api/auth', auth_routes_1.default);
+app.use('/api/users', user_routes_1.default);
+app.use('/api/marketplace', marketplace_routes_1.default);
+app.use('/api/scheduling', scheduling_routes_1.default);
+app.use('/api/payments', payment_routes_1.default);
+app.use('/api/pricing', pricing_routes_1.default);
+app.use('/api/metrics', metrics_routes_1.default);
+app.use('/api/auditing', auditing_routes_1.default);
+app.listen(port, () => {
+    console.log(`Backend server is running at http://localhost:${port}`);
+});
