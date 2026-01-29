@@ -8,6 +8,10 @@ export interface CreateTimeTokenData {
   duration: number;
   price: number;
   state?: TimeTokenState;
+  title?: string;
+  description?: string;
+  topics?: string[];
+  expertiseTags?: string[];
 }
 
 export interface UpdateTimeTokenData {
@@ -66,6 +70,175 @@ export class TimeTokenRepository extends BaseRepository<
     }
   }
 
+  async findListedWithFilters(params: {
+    search?: string;
+    skills?: string[];
+    topics?: string[];
+    minPrice?: number;
+    maxPrice?: number;
+    page: number;
+    pageSize: number;
+  }) {
+    const { search, skills, topics, minPrice, maxPrice, page, pageSize } = params;
+    const filters: Prisma.TimeTokenWhereInput[] = [{ state: 'listed' }];
+
+    if (typeof minPrice === 'number' || typeof maxPrice === 'number') {
+      filters.push({
+        price: {
+          ...(typeof minPrice === 'number' ? { gte: minPrice } : {}),
+          ...(typeof maxPrice === 'number' ? { lte: maxPrice } : {})
+        }
+      });
+    }
+
+    if (skills && skills.length > 0) {
+      filters.push({
+        professional: {
+          skills: { hasSome: skills }
+        }
+      });
+    }
+
+    if (topics && topics.length > 0) {
+      filters.push({
+        topics: { hasSome: topics }
+      });
+    }
+
+    if (search && search.trim().length > 0) {
+      const terms = search.split(/\s+/).map((term) => term.trim()).filter(Boolean);
+      const orFilters: Prisma.TimeTokenWhereInput[] = [];
+
+      terms.forEach((term) => {
+        orFilters.push(
+          { title: { contains: term, mode: 'insensitive' } },
+          { description: { contains: term, mode: 'insensitive' } },
+          { topics: { has: term } },
+          { expertiseTags: { has: term } },
+          { professional: { skills: { has: term } } },
+          { professional: { user: { email: { contains: term, mode: 'insensitive' } } } }
+        );
+      });
+
+      if (orFilters.length > 0) {
+        filters.push({ OR: orFilters });
+      }
+    }
+
+    const where: Prisma.TimeTokenWhereInput = filters.length > 1 ? { AND: filters } : filters[0];
+    const skip = (page - 1) * pageSize;
+
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.timeToken.count({ where }),
+      prisma.timeToken.findMany({
+        where,
+        include: {
+          professional: {
+            include: { user: true }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
+  }
+
+  async findListedCardsWithFilters(params: {
+    search?: string;
+    skills?: string[];
+    topics?: string[];
+    minPrice?: number;
+    maxPrice?: number;
+    page: number;
+    pageSize: number;
+  }) {
+    const { search, skills, topics, minPrice, maxPrice, page, pageSize } = params;
+    const filters: Prisma.TimeTokenWhereInput[] = [{ state: 'listed' }];
+
+    if (typeof minPrice === 'number' || typeof maxPrice === 'number') {
+      filters.push({
+        price: {
+          ...(typeof minPrice === 'number' ? { gte: minPrice } : {}),
+          ...(typeof maxPrice === 'number' ? { lte: maxPrice } : {})
+        }
+      });
+    }
+
+    if (skills && skills.length > 0) {
+      filters.push({
+        professional: {
+          skills: { hasSome: skills }
+        }
+      });
+    }
+
+    if (topics && topics.length > 0) {
+      filters.push({
+        topics: { hasSome: topics }
+      });
+    }
+
+    if (search && search.trim().length > 0) {
+      const terms = search.split(/\s+/).map((term) => term.trim()).filter(Boolean);
+      const orFilters: Prisma.TimeTokenWhereInput[] = [];
+
+      terms.forEach((term) => {
+        orFilters.push(
+          { title: { contains: term, mode: 'insensitive' } },
+          { description: { contains: term, mode: 'insensitive' } },
+          { topics: { has: term } },
+          { expertiseTags: { has: term } },
+          { professional: { skills: { has: term } } },
+          { professional: { user: { email: { contains: term, mode: 'insensitive' } } } }
+        );
+      });
+
+      if (orFilters.length > 0) {
+        filters.push({ OR: orFilters });
+      }
+    }
+
+    const where: Prisma.TimeTokenWhereInput = filters.length > 1 ? { AND: filters } : filters[0];
+    const skip = (page - 1) * pageSize;
+
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.timeToken.count({ where }),
+      prisma.timeToken.findMany({
+        where,
+        select: {
+          id: true,
+          state: true,
+          professionalId: true,
+          durationMinutes: true,
+          price: true,
+          currency: true,
+          title: true,
+          topics: true,
+          expertiseTags: true,
+          professional: {
+            select: {
+              verificationStatus: true,
+              user: {
+                select: {
+                  email: true,
+                  role: true
+                }
+              }
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
+  }
+
   async findByIdWithProfessional(id: string) {
     return prisma.timeToken.findUnique({
       where: { id },
@@ -100,7 +273,11 @@ export class TimeTokenRepository extends BaseRepository<
       professionalId: data.professionalId,
       durationMinutes: data.duration,
       price: data.price,
-      state: data.state || 'drafted'
+      state: data.state || 'drafted',
+      title: data.title || undefined,
+      description: data.description || undefined,
+      topics: data.topics ?? undefined,
+      expertiseTags: data.expertiseTags ?? undefined
     });
   }
 

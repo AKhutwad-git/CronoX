@@ -5,6 +5,7 @@ import { useRole } from '@/contexts/RoleContext';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { Calendar, Clock, Video, Plus, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -40,6 +41,8 @@ const MySessions = () => {
   const [bookings, setBookings] = useState<BookingSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [sessionAction, setSessionAction] = useState<Record<string, 'start' | 'end' | null>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -60,6 +63,7 @@ const MySessions = () => {
         const data = await getBookings();
         if (isMounted) {
           setBookings(Array.isArray(data) ? (data as BookingSummary[]) : []);
+          setLoadError(null);
         }
       } catch (err: unknown) {
         if (!isMounted) {
@@ -67,6 +71,7 @@ const MySessions = () => {
         }
         if (showToast) {
           const message = err instanceof Error ? err.message : 'Please try again in a moment.';
+          setLoadError(message);
           toast({
             title: 'Unable to load sessions',
             description: message,
@@ -124,6 +129,7 @@ const MySessions = () => {
 
     try {
       setSessionAction((prev) => ({ ...prev, [sessionId]: 'start' }));
+      setSessionError(null);
       const updated = await startSession(sessionId);
       setBookings((prev) =>
         prev.map((booking) =>
@@ -141,6 +147,7 @@ const MySessions = () => {
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to start this session.';
+      setSessionError(message);
       toast({
         title: 'Start failed',
         description: message,
@@ -162,6 +169,7 @@ const MySessions = () => {
 
     try {
       setSessionAction((prev) => ({ ...prev, [sessionId]: 'end' }));
+      setSessionError(null);
       const updated = await endSession(sessionId, 'completed');
       setBookings((prev) =>
         prev.map((booking) =>
@@ -180,6 +188,7 @@ const MySessions = () => {
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to end this session.';
+      setSessionError(message);
       toast({
         title: 'End failed',
         description: message,
@@ -220,6 +229,11 @@ const MySessions = () => {
           </div>
           {isProfessional && <Button asChild className="bg-accent hover:bg-accent/90 text-accent-foreground"><Link to="/create-session"><Plus size={18} className="mr-2" />New Session</Link></Button>}
         </motion.div>
+
+        <div className="space-y-3">
+          <ErrorNotice title="Unable to load sessions" message={loadError} />
+          <ErrorNotice title="Session update failed" message={sessionError} />
+        </div>
 
         <Tabs defaultValue="upcoming" className="w-full">
           <TabsList className="mb-6"><TabsTrigger value="upcoming">Upcoming</TabsTrigger><TabsTrigger value="completed">Completed</TabsTrigger>{isProfessional && <TabsTrigger value="listings">My Listings</TabsTrigger>}</TabsList>

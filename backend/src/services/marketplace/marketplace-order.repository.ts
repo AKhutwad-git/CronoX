@@ -26,6 +26,20 @@ export class MarketplaceOrderRepository extends BaseRepository<
     throw new Error('Orders cannot be deleted.');
   }
 
+  async findAllPaginated(page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.marketplaceOrder.count(),
+      prisma.marketplaceOrder.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
+  }
+
   async findByBuyerId(buyerId: string) {
     return prisma.marketplaceOrder.findMany({
       where: { buyerId },
@@ -38,6 +52,30 @@ export class MarketplaceOrderRepository extends BaseRepository<
         buyer: true
       }
     });
+  }
+
+  async findByBuyerIdPaginated(buyerId: string, page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const where: Prisma.MarketplaceOrderWhereInput = { buyerId };
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.marketplaceOrder.count({ where }),
+      prisma.marketplaceOrder.findMany({
+        where,
+        include: {
+          token: {
+            include: {
+              professional: { include: { user: true } }
+            }
+          },
+          buyer: true
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
   }
 
   async findByProfessional(professionalUserId: string) {
@@ -54,6 +92,32 @@ export class MarketplaceOrderRepository extends BaseRepository<
         buyer: true
       }
     });
+  }
+
+  async findByProfessionalPaginated(professionalUserId: string, page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const where: Prisma.MarketplaceOrderWhereInput = {
+      token: {
+        professional: {
+          userId: professionalUserId
+        }
+      }
+    };
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.marketplaceOrder.count({ where }),
+      prisma.marketplaceOrder.findMany({
+        where,
+        include: {
+          token: true,
+          buyer: true
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
   }
 
   async findByTimeTokenId(timeTokenId: string) {
@@ -119,7 +183,7 @@ export class MarketplaceOrderRepository extends BaseRepository<
             orderId: order.id,
             buyerId: data.buyerId,
             price: data.pricePaid
-          }
+          } as Prisma.InputJsonValue
         }
       });
 

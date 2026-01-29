@@ -11,6 +11,16 @@ export interface ApiRequestError extends Error {
   data?: unknown;
 }
 
+type ApiFailureDetail = {
+  url: string;
+  method: string;
+  status: number;
+  statusText: string;
+  correlationId?: string;
+  headers: Record<string, string>;
+  body?: BodyInit | null;
+};
+
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 const ensureLeadingSlash = (value: string) => (value.startsWith("/") ? value : `/${value}`);
 
@@ -54,6 +64,12 @@ const buildHeaders = (init?: ApiRequestInit) => {
   }
 
   return headers;
+};
+
+const emitApiFailure = (detail: ApiFailureDetail) => {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new CustomEvent("cronox:api-error", { detail }));
+  }
 };
 
 const parseResponse = async (response: Response): Promise<unknown> => {
@@ -131,6 +147,16 @@ export const apiRequest = async <TResponse>(path: string, init?: ApiRequestInit)
       data,
     });
 
+    emitApiFailure({
+      url: resolvedUrl,
+      method: requestInit.method ?? "GET",
+      status: response.status,
+      statusText: response.statusText,
+      correlationId: headers.get("X-Correlation-ID") ?? undefined,
+      headers: Object.fromEntries(headers.entries()),
+      body: requestInit.body ?? null,
+    });
+
     throw error;
   }
 
@@ -151,6 +177,16 @@ export const getBookings = async () =>
   apiRequest(`/scheduling/bookings`, {
   });
 
+export const getProfessionalMe = async () =>
+  apiRequest(`/users/professionals/me`, {
+  });
+
+export const updateProfessionalProfile = async (payload: { skills?: string[]; certifications?: string[] }) =>
+  apiRequest(`/users/professionals/me`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+
 export const createBooking = async (tokenId: string, scheduledAt: string) =>
   apiRequest(`/scheduling/bookings`, {
     method: "POST",
@@ -162,6 +198,44 @@ export const createBooking = async (tokenId: string, scheduledAt: string) =>
 
 export const getPayments = async () =>
   apiRequest(`/payments`, {
+  });
+
+export const requestRefund = async (paymentId: string) =>
+  apiRequest(`/payments/${paymentId}/refund`, {
+    method: "POST",
+  });
+
+export const approveRefund = async (paymentId: string) =>
+  apiRequest(`/payments/${paymentId}/refund/approve`, {
+    method: "POST",
+  });
+
+export const rejectRefund = async (paymentId: string) =>
+  apiRequest(`/payments/${paymentId}/refund/reject`, {
+    method: "POST",
+  });
+
+export const disputePayment = async (paymentId: string, reason?: string) =>
+  apiRequest(`/payments/${paymentId}/dispute`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+
+export const cancelBooking = async (bookingId: string) =>
+  apiRequest(`/scheduling/bookings/${bookingId}`, {
+    method: "DELETE",
+  });
+
+export const getWeeklyAvailability = async (professionalId?: string) =>
+  apiRequest(`/scheduling/availability/weekly${professionalId ? `?professionalId=${professionalId}` : ""}`, {
+  });
+
+export const updateWeeklyAvailability = async (
+  availability: Array<{ dayOfWeek: number; startMinute: number; endMinute: number; timezone?: string }>
+) =>
+  apiRequest(`/scheduling/availability/weekly`, {
+    method: "PUT",
+    body: JSON.stringify({ availability }),
   });
 
 export const startSession = async (sessionId: string) =>

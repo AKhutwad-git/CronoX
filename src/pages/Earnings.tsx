@@ -5,10 +5,11 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
 import { LifecycleIndicator } from '@/components/ui/LifecycleIndicator';
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { useEffect, useMemo, useState } from 'react';
 import { useRole } from '@/contexts/RoleContext';
 import { useToast } from '@/hooks/use-toast';
-import { getBookings, getPayments } from '@/lib/api';
+import { approveRefund, getBookings, getPayments, rejectRefund, requestRefund } from '@/lib/api';
 import { 
   Wallet, 
   Download, 
@@ -27,7 +28,7 @@ const Earnings = () => {
     id: string;
     sessionId: string;
     amount: number;
-    status: 'pending' | 'settled' | 'failed';
+    status: 'pending' | 'settled' | 'failed' | 'refund_requested' | 'refunded';
     createdAt?: string;
     settledAt?: string;
   };
@@ -55,6 +56,9 @@ const Earnings = () => {
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [bookings, setBookings] = useState<BookingSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [paymentAction, setPaymentAction] = useState<Record<string, 'request' | 'approve' | 'reject' | null>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -71,16 +75,18 @@ const Earnings = () => {
 
       try {
         setIsLoading(true);
-        const [paymentsData, bookingsData] = await Promise.all([getPayments(token), getBookings(token)]);
+        const [paymentsData, bookingsData] = await Promise.all([getPayments(), getBookings()]);
         if (isMounted) {
           setPayments(Array.isArray(paymentsData) ? (paymentsData as PaymentRecord[]) : []);
           setBookings(Array.isArray(bookingsData) ? (bookingsData as BookingSummary[]) : []);
+          setLoadError(null);
         }
       } catch (err: unknown) {
         if (!isMounted) {
           return;
         }
         const message = err instanceof Error ? err.message : 'Please try again in a moment.';
+        setLoadError(message);
         toast({
           title: 'Unable to load payments',
           description: message,
@@ -122,6 +128,90 @@ const Earnings = () => {
         return new Date(dateB).getTime() - new Date(dateA).getTime();
       });
   }, [payments, bookingsBySessionId]);
+
+  const handleRefundRequest = async (paymentId?: string) => {
+    if (!paymentId || paymentAction[paymentId]) {
+      return;
+    }
+    try {
+      setPaymentAction((prev) => ({ ...prev, [paymentId]: 'request' }));
+      setPaymentError(null);
+      await requestRefund(paymentId);
+      setPayments((prev) =>
+        prev.map((payment) => (payment.id === paymentId ? { ...payment, status: 'refund_requested' } : payment))
+      );
+      toast({
+        title: 'Refund requested',
+        description: 'Your refund request has been submitted.',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unable to request refund.';
+      setPaymentError(message);
+      toast({
+        title: 'Refund request failed',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setPaymentAction((prev) => ({ ...prev, [paymentId]: null }));
+    }
+  };
+
+  const handleApproveRefund = async (paymentId?: string) => {
+    if (!paymentId || paymentAction[paymentId]) {
+      return;
+    }
+    try {
+      setPaymentAction((prev) => ({ ...prev, [paymentId]: 'approve' }));
+      setPaymentError(null);
+      await approveRefund(paymentId);
+      setPayments((prev) =>
+        prev.map((payment) => (payment.id === paymentId ? { ...payment, status: 'refunded' } : payment))
+      );
+      toast({
+        title: 'Refund approved',
+        description: 'The refund has been approved.',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unable to approve refund.';
+      setPaymentError(message);
+      toast({
+        title: 'Refund approval failed',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setPaymentAction((prev) => ({ ...prev, [paymentId]: null }));
+    }
+  };
+
+  const handleRejectRefund = async (paymentId?: string) => {
+    if (!paymentId || paymentAction[paymentId]) {
+      return;
+    }
+    try {
+      setPaymentAction((prev) => ({ ...prev, [paymentId]: 'reject' }));
+      setPaymentError(null);
+      await rejectRefund(paymentId);
+      setPayments((prev) =>
+        prev.map((payment) => (payment.id === paymentId ? { ...payment, status: 'settled' } : payment))
+      );
+      toast({
+        title: 'Refund rejected',
+        description: 'The refund request has been rejected.',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unable to reject refund.';
+      setPaymentError(message);
+      toast({
+        title: 'Refund rejection failed',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setPaymentAction((prev) => ({ ...prev, [paymentId]: null }));
+    }
+  };
 
   const totalAmount = useMemo(
     () => payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
@@ -175,6 +265,11 @@ const Earnings = () => {
               : 'Review payments for completed sessions and consumed tokens.'}
           </p>
         </motion.div>
+
+        <div className="space-y-3 mb-6">
+          <ErrorNotice title="Unable to load payments" message={loadError} />
+          <ErrorNotice title="Payment update failed" message={paymentError} />
+        </div>
 
         {/* Earnings Summary */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -307,7 +402,15 @@ const Earnings = () => {
                     : booking?.token?.professional?.user?.email || 'Professional';
                   const dateValue = payment.settledAt ?? payment.createdAt ?? booking?.scheduledAt;
                   const statusBadge =
-                    payment.status === 'settled' ? 'paid' : payment.status === 'pending' ? 'pending' : null;
+                    payment.status === 'settled'
+                      ? 'paid'
+                      : payment.status === 'pending'
+                        ? 'pending'
+                        : payment.status === 'refund_requested'
+                          ? 'refund_requested'
+                          : payment.status === 'refunded'
+                            ? 'refunded'
+                            : null;
                   return (
                     <div key={payment.id} className="grid grid-cols-5 gap-4 px-4 py-4 border-b border-border items-center text-sm">
                       <span className="text-foreground">{sessionLabel}</span>
@@ -316,11 +419,43 @@ const Earnings = () => {
                       <span className="text-foreground">
                         <PriceDisplay amount={Number(payment.amount)} size="sm" />
                       </span>
-                      {statusBadge ? (
-                        <StatusBadge status={statusBadge} />
-                      ) : (
-                        <span className="text-xs font-medium text-foreground">Failed</span>
-                      )}
+                      <div className="flex flex-col items-start gap-2">
+                        {statusBadge ? (
+                          <StatusBadge status={statusBadge} />
+                        ) : (
+                          <span className="text-xs font-medium text-foreground">Failed</span>
+                        )}
+                        {!isProfessional && payment.status === 'settled' && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRefundRequest(payment.id)}
+                            disabled={paymentAction[payment.id] === 'request'}
+                          >
+                            {paymentAction[payment.id] === 'request' ? 'Requesting...' : 'Request Refund'}
+                          </Button>
+                        )}
+                        {isProfessional && payment.status === 'refund_requested' && (
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleApproveRefund(payment.id)}
+                              disabled={paymentAction[payment.id] === 'approve'}
+                              className="bg-accent hover:bg-accent/90 text-accent-foreground"
+                            >
+                              {paymentAction[payment.id] === 'approve' ? 'Approving...' : 'Approve'}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleRejectRefund(payment.id)}
+                              disabled={paymentAction[payment.id] === 'reject'}
+                            >
+                              {paymentAction[payment.id] === 'reject' ? 'Rejecting...' : 'Reject'}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

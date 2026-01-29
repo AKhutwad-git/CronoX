@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Navbar } from '@/components/layout/Navbar';
@@ -8,17 +8,17 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { useToast } from '@/hooks/use-toast';
 import { useRole } from '@/contexts/RoleContext';
-import { apiRequest } from '@/lib/api';
+import { apiRequest, getProfessionalMe, getWeeklyAvailability, updateWeeklyAvailability } from '@/lib/api';
 import { 
   Clock, 
   Calendar, 
   CheckCircle, 
   ArrowLeft, 
   Info,
-  Sparkles,
-  AlertCircle
+  Sparkles
 } from 'lucide-react';
 
 const durations = [
@@ -31,11 +31,47 @@ const durations = [
 const CreateSession = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { token } = useRole();
+  const { token, role } = useRole();
   const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
+  const [topicsInput, setTopicsInput] = useState('');
+  const [expertiseInput, setExpertiseInput] = useState('');
+  const [availabilityRows, setAvailabilityRows] = useState<Array<{ dayOfWeek: number; startTime: string; endTime: string }>>([
+    { dayOfWeek: 1, startTime: '09:00', endTime: '17:00' },
+  ]);
+  const [onboardingStatus, setOnboardingStatus] = useState<{ complete: boolean; missing: string[] }>({
+    complete: true,
+    missing: [],
+  });
+  const [isOnboardingLoading, setIsOnboardingLoading] = useState(false);
+
+  const profileStorageKey = 'cronox.profile';
+
+  const readLocalProfile = () => {
+    if (typeof localStorage === 'undefined') {
+      return { fullName: '', bio: '', availabilitySummary: '' };
+    }
+    try {
+      const raw = localStorage.getItem(profileStorageKey);
+      if (!raw) {
+        return { fullName: '', bio: '', availabilitySummary: '' };
+      }
+      const parsed = JSON.parse(raw) as {
+        fullName?: string;
+        bio?: string;
+        availabilitySummary?: string;
+      };
+      return {
+        fullName: parsed.fullName ?? '',
+        bio: parsed.bio ?? '',
+        availabilitySummary: parsed.availabilitySummary ?? '',
+      };
+    } catch {
+      return { fullName: '', bio: '', availabilitySummary: '' };
+    }
+  };
 
   const getErrorMessage = (error: unknown) => {
     if (error instanceof Error) {
@@ -43,6 +79,85 @@ const CreateSession = () => {
     }
     return 'Please try again in a moment.';
   };
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+
+    let isMounted = true;
+    const loadAvailability = async () => {
+      try {
+        const data = await getWeeklyAvailability();
+        if (!isMounted) {
+          return;
+        }
+        if (Array.isArray(data) && data.length > 0) {
+          const mapped = data.map((slot) => ({
+            dayOfWeek: slot.dayOfWeek,
+            startTime: `${String(Math.floor(slot.startMinute / 60)).padStart(2, '0')}:${String(slot.startMinute % 60).padStart(2, '0')}`,
+            endTime: `${String(Math.floor(slot.endMinute / 60)).padStart(2, '0')}:${String(slot.endMinute % 60).padStart(2, '0')}`,
+          }));
+          setAvailabilityRows(mapped);
+        }
+      } catch (error: unknown) {
+        if (isMounted) {
+          setAvailabilityRows([{ dayOfWeek: 1, startTime: '09:00', endTime: '17:00' }]);
+        }
+      }
+    };
+
+    loadAvailability();
+    return () => {
+      isMounted = false;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token || role !== 'professional') {
+      setOnboardingStatus({ complete: true, missing: [] });
+      return;
+    }
+
+    let isMounted = true;
+    const loadOnboarding = async () => {
+      try {
+        setIsOnboardingLoading(true);
+        const localProfile = readLocalProfile();
+        const data = await getProfessionalMe();
+        const skills = Array.isArray((data as { skills?: unknown }).skills) ? ((data as { skills?: string[] }).skills ?? []) : [];
+        const missing: string[] = [];
+        if (!localProfile.fullName.trim()) {
+          missing.push('Full name');
+        }
+        if (!localProfile.bio.trim()) {
+          missing.push('Bio');
+        }
+        if (!localProfile.availabilitySummary.trim()) {
+          missing.push('Availability summary');
+        }
+        if (skills.length === 0) {
+          missing.push('Skills');
+        }
+        if (isMounted) {
+          setOnboardingStatus({ complete: missing.length === 0, missing });
+        }
+      } catch {
+        if (isMounted) {
+          setOnboardingStatus({ complete: false, missing: ['Profile data'] });
+        }
+      } finally {
+        if (isMounted) {
+          setIsOnboardingLoading(false);
+        }
+      }
+    };
+
+    loadOnboarding();
+    return () => {
+      isMounted = false;
+    };
+  }, [role, token]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,6 +172,15 @@ const CreateSession = () => {
       return;
     }
 
+    if (role === 'professional' && !onboardingStatus.complete) {
+      toast({
+        title: 'Complete your profile',
+        description: 'Finish onboarding before creating a session.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     const priceValue = Number(price);
     if (!selectedDuration || !priceValue || priceValue <= 0) {
       toast({
@@ -68,6 +192,40 @@ const CreateSession = () => {
     }
 
     try {
+      const availabilityPayload = availabilityRows.map((row) => {
+        const [startHour, startMinute] = row.startTime.split(':').map(Number);
+        const [endHour, endMinute] = row.endTime.split(':').map(Number);
+        if (Number.isNaN(startHour) || Number.isNaN(startMinute) || Number.isNaN(endHour) || Number.isNaN(endMinute)) {
+          throw new Error('Availability time must be valid');
+        }
+        const startMinuteValue = startHour * 60 + startMinute;
+        const endMinuteValue = endHour * 60 + endMinute;
+        if (endMinuteValue <= startMinuteValue) {
+          throw new Error('Availability end time must be after start time');
+        }
+        return {
+          dayOfWeek: row.dayOfWeek,
+          startMinute: startMinuteValue,
+          endMinute: endMinuteValue,
+          timezone: 'UTC',
+        };
+      });
+
+      if (availabilityPayload.length === 0) {
+        throw new Error('Availability must include at least one time window');
+      }
+
+      await updateWeeklyAvailability(availabilityPayload);
+
+      const topics = topicsInput
+        .split(',')
+        .map((topic) => topic.trim())
+        .filter(Boolean);
+      const expertiseTags = expertiseInput
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+
       const mintData = await apiRequest<{ id: string }>('/marketplace/tokens/mint', {
         method: 'POST',
         headers: {
@@ -76,6 +234,10 @@ const CreateSession = () => {
         body: JSON.stringify({
           duration: selectedDuration,
           price: priceValue,
+          title: title.trim(),
+          description: description.trim() || undefined,
+          topics,
+          expertiseTags,
         }),
       });
 
@@ -101,7 +263,15 @@ const CreateSession = () => {
     }
   };
 
-  const isReady = selectedDuration && title.length > 3 && Number(price) > 0;
+  const isReady = selectedDuration && title.length > 3 && Number(price) > 0 && availabilityRows.length > 0 && onboardingStatus.complete;
+
+  const handleAddAvailability = () => {
+    setAvailabilityRows((prev) => [...prev, { dayOfWeek: 1, startTime: '09:00', endTime: '17:00' }]);
+  };
+
+  const handleRemoveAvailability = (index: number) => {
+    setAvailabilityRows((prev) => prev.filter((_, idx) => idx !== index));
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -140,6 +310,20 @@ const CreateSession = () => {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
           >
+            {!onboardingStatus.complete && role === 'professional' && (
+              <div className="mb-6">
+                <ErrorNotice
+                  title="Complete onboarding to list sessions"
+                  message={
+                    isOnboardingLoading
+                      ? 'Checking your profile completion status.'
+                      : `Missing: ${onboardingStatus.missing.join(', ')}.`
+                  }
+                  actionLabel="Go to Profile"
+                  onAction={() => navigate('/profile')}
+                />
+              </div>
+            )}
             <form onSubmit={handleSubmit} className="space-y-8">
               {/* Session Title */}
               <div className="card-elevated p-6">
@@ -170,6 +354,29 @@ const CreateSession = () => {
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
                       className="mt-1.5 min-h-[100px]"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="topics">Topics</Label>
+                    <Input
+                      id="topics"
+                      placeholder="e.g., Growth, Strategy, Leadership"
+                      value={topicsInput}
+                      onChange={(e) => setTopicsInput(e.target.value)}
+                      className="mt-1.5 h-12"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      Separate topics with commas to help buyers discover your session.
+                    </p>
+                  </div>
+                  <div>
+                    <Label htmlFor="expertise">Expertise Tags</Label>
+                    <Input
+                      id="expertise"
+                      placeholder="e.g., B2B, Operations, Product"
+                      value={expertiseInput}
+                      onChange={(e) => setExpertiseInput(e.target.value)}
+                      className="mt-1.5 h-12"
                     />
                   </div>
                   <div>
@@ -229,20 +436,75 @@ const CreateSession = () => {
                 <h2 className="font-display text-lg font-semibold text-foreground mb-4">
                   Availability
                 </h2>
-                
-                <div className="bg-secondary/50 rounded-xl p-5 border border-border">
-                  <div className="flex items-start gap-3">
-                    <Calendar className="text-muted-foreground flex-shrink-0 mt-0.5" size={20} />
-                    <div>
-                      <p className="text-sm text-muted-foreground mb-2">
-                        Your availability calendar will be displayed here. You'll be able to select specific 
-                        days and time slots when you're available for sessions.
-                      </p>
-                      <p className="text-xs text-muted-foreground italic">
-                        The calendar interface will allow you to set recurring availability patterns 
-                        or individual time slots.
-                      </p>
+
+                <div className="space-y-3">
+                  {availabilityRows.map((row, index) => (
+                    <div key={`${row.dayOfWeek}-${index}`} className="grid sm:grid-cols-[140px_1fr_1fr_auto] gap-3 items-center">
+                      <div className="space-y-1">
+                        <Label>Day</Label>
+                        <select
+                          className="w-full h-10 rounded-md border border-border bg-background px-3 text-sm"
+                          value={row.dayOfWeek}
+                          onChange={(event) => {
+                            const value = Number(event.target.value);
+                            setAvailabilityRows((prev) =>
+                              prev.map((item, idx) => (idx === index ? { ...item, dayOfWeek: value } : item))
+                            );
+                          }}
+                        >
+                          {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((label, value) => (
+                            <option key={label} value={value}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Start</Label>
+                        <Input
+                          type="time"
+                          value={row.startTime}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setAvailabilityRows((prev) =>
+                              prev.map((item, idx) => (idx === index ? { ...item, startTime: value } : item))
+                            );
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>End</Label>
+                        <Input
+                          type="time"
+                          value={row.endTime}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setAvailabilityRows((prev) =>
+                              prev.map((item, idx) => (idx === index ? { ...item, endTime: value } : item))
+                            );
+                          }}
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => handleRemoveAvailability(index)}
+                          disabled={availabilityRows.length === 1}
+                        >
+                          Remove
+                        </Button>
+                      </div>
                     </div>
+                  ))}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Calendar size={16} />
+                      <span>Availability uses UTC time</span>
+                    </div>
+                    <Button type="button" variant="outline" onClick={handleAddAvailability}>
+                      Add Window
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -316,7 +578,7 @@ const CreateSession = () => {
                   { label: 'Session title', done: title.length > 3 },
                   { label: 'Duration selected', done: !!selectedDuration },
                   { label: 'Price set', done: Number(price) > 0 },
-                  { label: 'Availability set', done: false },
+                  { label: 'Availability set', done: availabilityRows.length > 0 },
                 ].map((item) => (
                   <div key={item.label} className="flex items-center gap-3">
                     <div className={`w-5 h-5 rounded-full flex items-center justify-center ${

@@ -6,6 +6,10 @@ import {
   getSessions,
   cancelBooking,
   cancelSession,
+  getWeeklyAvailability,
+  upsertWeeklyAvailability,
+  getAvailabilitySlots,
+  createAvailabilitySlots,
 } from './scheduling.controller';
 import { authenticate } from '../../middleware/auth.middleware';
 import { authorize } from '../../middleware/role.middleware';
@@ -18,5 +22,10 @@ router.delete('/bookings/:id', authenticate, cancelBooking);
 
 router.get('/sessions', authenticate, getSessions);
 router.delete('/sessions/:id', authenticate, cancelSession);
+
+router.get('/availability/weekly', authenticate, getWeeklyAvailability);
+router.put('/availability/weekly', authenticate, authorize(['professional']), upsertWeeklyAvailability);
+router.get('/availability/slots', authenticate, getAvailabilitySlots);
+router.post('/availability/slots', authenticate, authorize(['professional']), createAvailabilitySlots);
 
 export default router;

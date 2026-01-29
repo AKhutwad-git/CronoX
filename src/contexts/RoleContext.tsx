@@ -15,7 +15,7 @@ interface RoleContextType {
 const RoleContext = createContext<RoleContextType | undefined>(undefined);
 
 export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const resolveRoleFromToken = useCallback((jwt: string | null): UserRole => {
+  const decodeTokenPayload = useCallback((jwt: string | null) => {
     if (!jwt) {
       return null;
     }
@@ -30,21 +30,67 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const paddedPayload =
         payloadBase64.length % 4 === 0 ? payloadBase64 : payloadBase64.padEnd(payloadBase64.length + (4 - (payloadBase64.length % 4)), '=');
       const decoded = atob(paddedPayload);
-      const payload = JSON.parse(decoded) as { role?: unknown };
+      return JSON.parse(decoded) as { role?: unknown; exp?: unknown };
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const isTokenValid = useCallback(
+    (jwt: string | null) => {
+      const payload = decodeTokenPayload(jwt);
+      if (!payload) {
+        return false;
+      }
+      if (typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()) {
+        return false;
+      }
+      return true;
+    },
+    [decodeTokenPayload]
+  );
+
+  const resolveRoleFromToken = useCallback(
+    (jwt: string | null): UserRole => {
+      const payload = decodeTokenPayload(jwt);
+      if (!payload) {
+        return null;
+      }
+      if (typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()) {
+        return null;
+      }
       const roleValue = payload?.role;
       if (roleValue === 'buyer' || roleValue === 'professional') {
         return roleValue;
       }
+      return null;
+    },
+    [decodeTokenPayload]
+  );
+
+  const readStoredToken = useCallback(() => {
+    if (typeof localStorage === 'undefined') {
+      return null;
+    }
+    try {
+      const stored = localStorage.getItem('cronox.token');
+      if (!stored) {
+        return null;
+      }
+      if (!isTokenValid(stored)) {
+        localStorage.removeItem('cronox.token');
+        return null;
+      }
+      return stored;
     } catch {
       return null;
     }
+  }, [isTokenValid]);
 
-    return null;
-  }, []);
-
-  const [token, setTokenState] = useState<string | null>(() => localStorage.getItem('cronox.token'));
-  const [role, setRoleState] = useState<UserRole>(() => resolveRoleFromToken(localStorage.getItem('cronox.token')));
-  const [isAuthenticated, setAuthenticatedState] = useState(Boolean(localStorage.getItem('cronox.token')));
+  const initialToken = readStoredToken();
+  const [token, setTokenState] = useState<string | null>(initialToken);
+  const [role, setRoleState] = useState<UserRole>(() => resolveRoleFromToken(initialToken));
+  const [isAuthenticated, setAuthenticatedState] = useState(Boolean(initialToken));
 
   const setRole = useCallback((nextRole: UserRole) => {
     if (token) {
@@ -56,30 +102,41 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const setAuthenticated = useCallback((auth: boolean) => {
     setAuthenticatedState(auth);
     if (!auth) {
-      localStorage.removeItem('cronox.token');
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('cronox.token');
+      }
       setTokenState(null);
       setRoleState(null);
     }
   }, []);
 
-  const setToken = useCallback((nextToken: string | null) => {
-    setTokenState(nextToken);
-    if (nextToken) {
-      localStorage.setItem('cronox.token', nextToken);
-      setAuthenticatedState(true);
-      setRoleState(resolveRoleFromToken(nextToken));
-    } else {
-      localStorage.removeItem('cronox.token');
-      setAuthenticatedState(false);
-      setRoleState(null);
-    }
-  }, [resolveRoleFromToken]);
+  const setToken = useCallback(
+    (nextToken: string | null) => {
+      setTokenState(nextToken);
+      if (nextToken && isTokenValid(nextToken)) {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('cronox.token', nextToken);
+        }
+        setAuthenticatedState(true);
+        setRoleState(resolveRoleFromToken(nextToken));
+      } else {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem('cronox.token');
+        }
+        setAuthenticatedState(false);
+        setRoleState(null);
+      }
+    },
+    [isTokenValid, resolveRoleFromToken]
+  );
 
   const logout = useCallback(() => {
     setRoleState(null);
     setTokenState(null);
     setAuthenticatedState(false);
-    localStorage.removeItem('cronox.token');
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('cronox.token');
+    }
   }, []);
 
   return (

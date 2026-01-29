@@ -21,6 +21,13 @@ enum ProfessionalStatus {
   suspended
 }
 
+enum ProfessionalVerificationStatus {
+  unverified
+  pending
+  verified
+  rejected
+}
+
 enum TokenState {
   drafted
   listed
@@ -40,12 +47,23 @@ enum SessionStatus {
   active
   completed
   failed
+  cancelled_by_buyer
+  cancelled_by_professional
+  refund_requested
+  refunded
 }
 
 enum PaymentStatus {
   pending
   settled
   failed
+  refund_requested
+  refunded
+}
+
+enum AvailabilitySlotStatus {
+  available
+  blocked
 }
 
 /////////////////////////////////////////////////
@@ -77,11 +95,16 @@ model Professional {
   baseRate  Decimal             @map("base_rate")
   currency  String              @default("INR")
   status    ProfessionalStatus
+  verificationStatus ProfessionalVerificationStatus @default(unverified) @map("verification_status")
+  skills    String[]            @default([])
+  certifications String[]       @default([])
   createdAt DateTime            @default(now()) @map("created_at")
 
   user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   tokens    TimeToken[]
   sessions  Session[]
+  weeklyAvailability WeeklyAvailability[]
+  availabilitySlots AvailabilitySlot[]
 }
 
 /////////////////////////////////////////////////
@@ -117,6 +140,10 @@ model TimeToken {
   id               String     @id @default(uuid())
   professionalId   String     @map("professional_id")
   ownerId          String?    @map("owner_id")
+  title            String     @default("Session")
+  description      String?
+  topics           String[]   @default([])
+  expertiseTags    String[]   @default([])
   durationMinutes  Int        @map("duration_minutes")
   price            Decimal
   currency         String     @default("INR")
@@ -131,6 +158,35 @@ model TimeToken {
   booking          Booking?
 
   @@index([state])
+}
+
+/////////////////////////////////////////////////
+
+model WeeklyAvailability {
+  id             String   @id @default(uuid())
+  professionalId String   @map("professional_id")
+  dayOfWeek      Int      @map("day_of_week")
+  startMinute    Int      @map("start_minute")
+  endMinute      Int      @map("end_minute")
+  timezone       String   @default("UTC")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  professional   Professional @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+
+  @@index([professionalId, dayOfWeek])
+}
+
+model AvailabilitySlot {
+  id             String   @id @default(uuid())
+  professionalId String   @map("professional_id")
+  startAt        DateTime @map("start_at")
+  endAt          DateTime @map("end_at")
+  status         AvailabilitySlotStatus @default(available)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  professional   Professional @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+
+  @@index([professionalId, startAt])
 }
 
 /////////////////////////////////////////////////

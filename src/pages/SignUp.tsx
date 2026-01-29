@@ -4,6 +4,7 @@ import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { Navbar } from '@/components/layout/Navbar';
 import { useRole } from '@/contexts/RoleContext';
 import { Clock, Shield, IndianRupee, CheckCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
@@ -14,7 +15,7 @@ const SignUp = () => {
   const [searchParams] = useSearchParams();
   const roleParam = searchParams.get('role') as 'buyer' | 'professional' | null;
   const navigate = useNavigate();
-  const { setRole, setToken, setAuthenticated } = useRole();
+  const { setToken } = useRole();
   const { toast } = useToast();
   
   const [selectedRole, setSelectedRole] = useState<'buyer' | 'professional'>(roleParam || 'buyer');
@@ -84,9 +85,7 @@ const SignUp = () => {
         throw new Error('Account created but no token was returned.');
       }
 
-      setRole(data.role || selectedRole);
       setToken(data.token);
-      setAuthenticated(true);
 
       toast({
         title: 'Account created successfully!',
@@ -221,11 +220,7 @@ const SignUp = () => {
                   </div>
                 </div>
 
-                {formError && (
-                  <p className="text-sm text-destructive" role="alert">
-                    {formError}
-                  </p>
-                )}
+                <ErrorNotice title="Sign up failed" message={formError} />
 
                 <Button 
                   type="submit" 

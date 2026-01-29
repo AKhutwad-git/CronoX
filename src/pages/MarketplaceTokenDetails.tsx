@@ -5,20 +5,30 @@ import { Footer } from '@/components/layout/Footer';
 import { StatusBadge, type SessionStatus } from '@/components/ui/StatusBadge';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { TrustBadge } from '@/components/ui/TrustBadge';
 import { User, Clock, ArrowLeft, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useRole } from '@/contexts/RoleContext';
-import { apiRequest, createBooking, endSession, getBookings, purchaseMarketplaceToken, startSession } from '@/lib/api';
+import { apiRequest, createBooking, endSession, getBookings, getWeeklyAvailability, purchaseMarketplaceToken, startSession } from '@/lib/api';
 
 type TokenDetails = {
   id: string;
   state: string;
+  professionalId?: string;
   durationMinutes: number;
   price: number;
   currency?: string;
+  title?: string;
+  description?: string;
+  topics?: string[];
+  expertiseTags?: string[];
   createdAt?: string;
   professional?: {
+    verificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
+    skills?: string[];
     user?: {
       email?: string;
       role?: string;
@@ -35,10 +45,17 @@ type BookingDetails = {
   };
   session?: {
     id: string;
-    status?: 'pending' | 'active' | 'completed' | 'failed';
+    status?: 'pending' | 'active' | 'completed' | 'failed' | 'refund_requested' | 'refunded' | 'cancelled_by_buyer' | 'cancelled_by_professional';
     startedAt?: string;
     endedAt?: string;
   };
+};
+
+type WeeklyAvailability = {
+  dayOfWeek: number;
+  startMinute: number;
+  endMinute: number;
+  timezone?: string;
 };
 
 const MarketplaceTokenDetails = () => {
@@ -54,6 +71,11 @@ const MarketplaceTokenDetails = () => {
   const [bookingTime, setBookingTime] = useState('');
   const [isBookingLoading, setIsBookingLoading] = useState(false);
   const [isBookingSubmitting, setIsBookingSubmitting] = useState(false);
+  const [availability, setAvailability] = useState<WeeklyAvailability[]>([]);
+  const [purchaseError, setPurchaseError] = useState<string | null>(null);
+  const [bookingError, setBookingError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [bookingLoadError, setBookingLoadError] = useState<string | null>(null);
 
   const status = useMemo<SessionStatus>(() => {
     if (!token?.state) return 'pending';
@@ -127,12 +149,14 @@ const MarketplaceTokenDetails = () => {
         const matched = await fetchBooking();
         if (isMounted) {
           setBooking(matched);
+          setBookingLoadError(null);
         }
       } catch (err: unknown) {
         if (!isMounted) {
           return;
         }
         const message = err instanceof Error ? err.message : 'Unable to load booking details.';
+        setBookingLoadError(message);
         toast({
           title: 'Unable to load booking',
           description: message,
@@ -151,6 +175,33 @@ const MarketplaceTokenDetails = () => {
       isMounted = false;
     };
   }, [authToken, fetchBooking, id, role, toast]);
+
+  useEffect(() => {
+    if (!token?.professionalId) {
+      setAvailability([]);
+      return;
+    }
+
+    let isMounted = true;
+    const loadAvailability = async () => {
+      try {
+        const data = await getWeeklyAvailability(token.professionalId);
+        if (isMounted) {
+          setAvailability(Array.isArray(data) ? (data as WeeklyAvailability[]) : []);
+        }
+      } catch (err: unknown) {
+        if (!isMounted) {
+          return;
+        }
+        setAvailability([]);
+      }
+    };
+    loadAvailability();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [token?.professionalId]);
 
   const isPurchasable = role === 'buyer' && token?.state === 'listed';
   const purchaseLabel =
@@ -194,6 +245,7 @@ const MarketplaceTokenDetails = () => {
 
     try {
       setIsPurchasing(true);
+      setPurchaseError(null);
       const response = await purchaseMarketplaceToken(id);
       const nextToken =
         response && typeof response === 'object' && 'token' in response
@@ -218,6 +270,7 @@ const MarketplaceTokenDetails = () => {
       await fetchToken();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to purchase this token.';
+      setPurchaseError(message);
       toast({
         title: 'Purchase failed',
         description: message,
@@ -281,12 +334,34 @@ const MarketplaceTokenDetails = () => {
       return;
     }
 
+    if (availability.length > 0 && token?.durationMinutes) {
+      const day = scheduledAt.getUTCDay();
+      const startMinute = scheduledAt.getUTCHours() * 60 + scheduledAt.getUTCMinutes();
+      const endMinute = startMinute + token.durationMinutes;
+      const inAvailability = availability.some(
+        (slot) =>
+          slot.dayOfWeek === day &&
+          slot.startMinute <= startMinute &&
+          slot.endMinute >= endMinute
+      );
+      if (!inAvailability) {
+        toast({
+          title: 'Outside availability',
+          description: 'Select a time within the professional availability window.',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     if (isBookingSubmitting) {
       return;
     }
 
     try {
       setIsBookingSubmitting(true);
+      setBookingError(null);
+      setSessionError(null);
       const response = await createBooking(id, scheduledAt.toISOString());
       const nextBooking =
         response && typeof response === 'object' && 'booking' in response
@@ -346,6 +421,7 @@ const MarketplaceTokenDetails = () => {
           }
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'Unable to update the session status.';
+          setSessionError(message);
           toast({
             title: 'Session update failed',
             description: message,
@@ -355,6 +431,7 @@ const MarketplaceTokenDetails = () => {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to book this session.';
+      setBookingError(message);
       toast({
         title: 'Booking failed',
         description: message,
@@ -388,9 +465,13 @@ const MarketplaceTokenDetails = () => {
             <p className="text-muted-foreground">Loading session details...</p>
           </div>
         ) : error ? (
-          <div className="card-elevated p-8 text-center">
-            <p className="text-muted-foreground mb-2">Unable to load session details.</p>
-            <p className="text-xs text-muted-foreground italic">{error}</p>
+          <div className="card-elevated p-8">
+            <ErrorNotice
+              title="Unable to load session details"
+              message={error}
+              actionLabel="Back to Marketplace"
+              onAction={() => window.location.assign('/marketplace')}
+            />
           </div>
         ) : token ? (
           <div className="card-elevated p-6 lg:p-8">
@@ -406,6 +487,11 @@ const MarketplaceTokenDetails = () => {
                   <p className="text-sm text-muted-foreground">
                     {token.professional?.user?.role || 'Professional'}
                   </p>
+                  {token.professional?.verificationStatus === 'verified' && (
+                    <div className="mt-2">
+                      <TrustBadge type="verified" size="sm" />
+                    </div>
+                  )}
                 </div>
               </div>
               <StatusBadge status={status} />
@@ -425,6 +511,40 @@ const MarketplaceTokenDetails = () => {
               </div>
             </div>
 
+            {(token.title || token.description || token.topics?.length || token.expertiseTags?.length) && (
+              <div className="mt-6 rounded-xl border border-border p-4">
+                {token.title && <p className="text-sm font-semibold text-foreground mb-2">{token.title}</p>}
+                {token.description && <p className="text-sm text-muted-foreground mb-3">{token.description}</p>}
+                {(token.topics?.length || token.expertiseTags?.length) && (
+                  <div className="flex flex-wrap gap-2">
+                    {(token.topics?.length ? token.topics : token.expertiseTags)?.map((tag) => (
+                      <Badge key={tag} variant="secondary">
+                        {tag}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {availability.length > 0 && (
+              <div className="mt-6 rounded-xl border border-border p-4">
+                <p className="text-xs text-muted-foreground mb-2">Availability</p>
+                <div className="grid gap-2 text-sm text-muted-foreground">
+                  {availability.map((slot) => (
+                    <div key={`${slot.dayOfWeek}-${slot.startMinute}-${slot.endMinute}`} className="flex items-center gap-2">
+                      <span className="font-medium text-foreground">
+                        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][slot.dayOfWeek]}
+                      </span>
+                      <span>
+                        {String(Math.floor(slot.startMinute / 60)).padStart(2, '0')}:{String(slot.startMinute % 60).padStart(2, '0')} - {String(Math.floor(slot.endMinute / 60)).padStart(2, '0')}:{String(slot.endMinute % 60).padStart(2, '0')} {slot.timezone || 'UTC'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="mt-6 text-sm text-muted-foreground">
               <p>Token ID: {token.id}</p>
               {token.createdAt && <p>Created: {new Date(token.createdAt).toLocaleString()}</p>}
@@ -432,11 +552,14 @@ const MarketplaceTokenDetails = () => {
 
             {role === 'buyer' && (
               <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-t border-border pt-6">
-                <p className="text-sm text-muted-foreground">
-                  {token.state === 'listed'
-                    ? 'Ready to purchase this session token.'
-                    : 'This session token is no longer available for purchase.'}
-                </p>
+                <div className="flex-1 space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    {token.state === 'listed'
+                      ? 'Ready to purchase this session token.'
+                      : 'This session token is no longer available for purchase.'}
+                  </p>
+                  <ErrorNotice title="Purchase failed" message={purchaseError} />
+                </div>
                 <Button
                   onClick={handlePurchase}
                   disabled={!isPurchasable || isPurchasing}
@@ -493,6 +616,11 @@ const MarketplaceTokenDetails = () => {
                       'Book Session'
                     )}
                   </Button>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <ErrorNotice title="Booking failed" message={bookingError} />
+                  <ErrorNotice title="Booking unavailable" message={bookingLoadError} />
+                  <ErrorNotice title="Session update failed" message={sessionError} />
                 </div>
                 {!canBook && (
                   <p className="text-xs text-muted-foreground mt-3">

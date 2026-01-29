@@ -13,6 +13,15 @@ const timeTokenRepository = new TimeTokenRepository();
 const orderRepository = new MarketplaceOrderRepository();
 const auditLogRepository = new AuditLogRepository();
 const professionalRepository = new ProfessionalRepository();
+const listedTokensCache = new Map<
+  string,
+  { expiresAt: number; payload: { items: unknown[]; totalCount: number; currentPage: number; pageSize: number } }
+>();
+const listedTokensCacheTtlMs = 15000;
+
+const clearListedTokensCache = () => {
+  listedTokensCache.clear();
+};
 
 // Helper to transition state logic (pure function)
 type TimeTokenRecord = TimeToken;
@@ -21,6 +30,10 @@ type MintTokenBody = {
   startTime?: string;
   duration: number;
   price: number;
+  title?: string;
+  description?: string;
+  topics?: string[];
+  expertiseTags?: string[];
 };
 
 const isTimeTokenState = (value: string): value is TimeTokenState =>
@@ -52,7 +65,7 @@ const emitEvent = async (eventType: string, data: Record<string, unknown>) => {
 
 export const mintTimeToken: RequestHandler = async (req, res: Response) => {
   try {
-    const { startTime, duration, price } = (req as AuthenticatedRequest).body as MintTokenBody;
+    const { startTime, duration, price, title, description, topics, expertiseTags } = (req as AuthenticatedRequest).body as MintTokenBody;
     const user = (req as AuthenticatedRequest).user;
 
     if (!user || user.role !== 'professional') {
@@ -68,9 +81,14 @@ export const mintTimeToken: RequestHandler = async (req, res: Response) => {
     const newToken = await timeTokenRepository.createWithValidation({
       professionalId: professional.id,
       duration,
-      price
+      price,
+      title,
+      description,
+      topics,
+      expertiseTags
     });
 
+    clearListedTokensCache();
     await emitEvent('TokenMinted', { tokenId: newToken.id, professionalId: professional.id, price });
     res.status(201).json(newToken);
   } catch (error: unknown) {
@@ -110,6 +128,7 @@ const transitionTokenState = async (
       state: newState,
     })) as TimeTokenRecord;
 
+    clearListedTokensCache();
     if (newState === 'purchased') {
       const buyerId = user?.userId;
       if (!buyerId) return res.status(401).json({ message: 'Unauthorized' });
@@ -156,6 +175,7 @@ export const consumeTimeToken: RequestHandler = async (req, res: Response) => {
         const updatedToken = (await timeTokenRepository.update(id, {
           state: 'consumed',
         })) as TimeTokenRecord;
+        clearListedTokensCache();
         await emitEvent('TokenConsumed', { tokenId: token.id, buyerId: token.ownerId });
         res.json(updatedToken);
     } catch (error: unknown) {
@@ -202,6 +222,7 @@ export const purchaseTimeToken: RequestHandler = async (req, res: Response) => {
       currency: token.currency || 'INR'
     });
 
+    clearListedTokensCache();
     await emitEvent('TokenPurchased', { tokenId: token.id, buyerId, price: token.price });
     res.json({ token, order: newOrder });
 
@@ -214,9 +235,58 @@ export const purchaseTimeToken: RequestHandler = async (req, res: Response) => {
 export const getListedTimeTokens: RequestHandler = async (req, res: Response) => {
   try {
     logger.info('[marketplace] GET /api/marketplace/tokens received');
-    const tokens = await timeTokenRepository.findByState('listed');
-    logger.info('[marketplace] GET /api/marketplace/tokens result', { count: tokens.length });
-    res.json(tokens);
+    const parseList = (value: unknown) => {
+      if (Array.isArray(value)) {
+        return value.flatMap((entry) => String(entry).split(',')).map((entry) => entry.trim()).filter(Boolean);
+      }
+      if (typeof value === 'string') {
+        return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+      }
+      return [];
+    };
+
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    const skills = parseList(req.query.skills);
+    const topics = parseList(req.query.topics);
+
+    const minPriceRaw = typeof req.query.minPrice === 'string' ? Number(req.query.minPrice) : undefined;
+    const maxPriceRaw = typeof req.query.maxPrice === 'string' ? Number(req.query.maxPrice) : undefined;
+    const minPrice = Number.isFinite(minPriceRaw) ? minPriceRaw : undefined;
+    const maxPrice = Number.isFinite(maxPriceRaw) ? maxPriceRaw : undefined;
+
+    const pageRaw = typeof req.query.page === 'string' ? Number(req.query.page) : 1;
+    const pageSizeRaw = typeof req.query.pageSize === 'string' ? Number(req.query.pageSize) : 12;
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+    const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.min(Math.floor(pageSizeRaw), 50) : 12;
+
+    const cacheKey = JSON.stringify({
+      search,
+      skills: [...skills].sort(),
+      topics: [...topics].sort(),
+      minPrice,
+      maxPrice,
+      page,
+      pageSize
+    });
+    const cached = listedTokensCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json(cached.payload);
+    }
+
+    const { totalCount, items } = await timeTokenRepository.findListedCardsWithFilters({
+      search,
+      skills,
+      topics,
+      minPrice,
+      maxPrice,
+      page,
+      pageSize
+    });
+
+    const payload = { items, totalCount, currentPage: page, pageSize };
+    listedTokensCache.set(cacheKey, { expiresAt: Date.now() + listedTokensCacheTtlMs, payload });
+    logger.info('[marketplace] GET /api/marketplace/tokens result', { count: items.length, totalCount, page, pageSize });
+    res.json(payload);
   } catch (error: unknown) {
     logger.error('[marketplace] GET /api/marketplace/tokens failed', {
       error: error instanceof Error ? {
@@ -237,6 +307,27 @@ export const getOrders: RequestHandler = async (req, res: Response) => {
   if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
   try {
+    const hasPagination = typeof req.query.page === 'string' || typeof req.query.pageSize === 'string';
+    const pageRaw = typeof req.query.page === 'string' ? Number(req.query.page) : 1;
+    const pageSizeRaw = typeof req.query.pageSize === 'string' ? Number(req.query.pageSize) : 20;
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+    const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.min(Math.floor(pageSizeRaw), 50) : 20;
+
+    if (hasPagination) {
+      let result: { totalCount: number; items: unknown[] };
+      if (user.role === 'admin') {
+        result = await orderRepository.findAllPaginated(page, pageSize);
+      } else if (user.role === 'professional') {
+        result = await orderRepository.findByProfessionalPaginated(user.userId, page, pageSize);
+      } else {
+        result = await orderRepository.findByBuyerIdPaginated(user.userId, page, pageSize);
+      }
+      res.set('X-Total-Count', String(result.totalCount));
+      res.set('X-Page', String(page));
+      res.set('X-Page-Size', String(pageSize));
+      return res.json(result.items);
+    }
+
     let orders: unknown[] = [];
     if (user.role === 'admin') {
       orders = await orderRepository.findAll();

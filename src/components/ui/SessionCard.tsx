@@ -3,13 +3,18 @@ import { Clock, User, ArrowRight } from 'lucide-react';
 import { StatusBadge, SessionStatus } from './StatusBadge';
 import { PriceDisplay } from './PriceDisplay';
 import { Button } from './button';
+import { Badge } from './badge';
+import { TrustBadge } from './TrustBadge';
 
 interface SessionCardProps {
   professionalName?: string;
   role?: string;
+  verificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
   duration?: number;
   price?: number;
   status?: SessionStatus;
+  title?: string;
+  tags?: string[];
   className?: string;
   showAction?: boolean;
   actionLabel?: string;
@@ -20,9 +25,12 @@ interface SessionCardProps {
 export const SessionCard = ({
   professionalName,
   role,
+  verificationStatus,
   duration,
   price,
   status = 'available',
+  title,
+  tags,
   className,
   showAction = true,
   actionLabel = 'View Details',
@@ -55,6 +63,16 @@ export const SessionCard = ({
             <p className="text-sm text-muted-foreground">
               {isPlaceholder ? 'Professional role/expertise' : role}
             </p>
+            {verificationStatus === 'verified' && (
+              <div className="mt-2">
+                <TrustBadge type="verified" size="sm" />
+              </div>
+            )}
+            {verificationStatus && verificationStatus !== 'verified' && !isPlaceholder && (
+              <p className="text-xs text-muted-foreground mt-1 capitalize">
+                {verificationStatus.replace('_', ' ')}
+              </p>
+            )}
           </div>
         </div>
         <StatusBadge status={status} />
@@ -66,6 +84,21 @@ export const SessionCard = ({
           <span>{isPlaceholder ? 'Duration in minutes' : `${duration} min`}</span>
         </div>
       </div>
+
+      {(title || (tags && tags.length > 0)) && (
+        <div className="mb-4">
+          {title && <p className="text-sm font-semibold text-foreground mb-2">{title}</p>}
+          {tags && tags.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {tags.slice(0, 3).map((tag) => (
+                <Badge key={tag} variant="secondary">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-between pt-4 border-t border-border">
         <div>

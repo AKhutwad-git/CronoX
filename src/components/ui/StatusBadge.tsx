@@ -1,6 +1,15 @@
 import { cn } from '@/lib/utils';
 
-export type SessionStatus = 'available' | 'booked' | 'completed' | 'paid' | 'pending' | 'active';
+export type SessionStatus =
+  | 'available'
+  | 'booked'
+  | 'completed'
+  | 'paid'
+  | 'pending'
+  | 'active'
+  | 'cancelled'
+  | 'refund_requested'
+  | 'refunded';
 
 interface StatusBadgeProps {
   status: SessionStatus;
@@ -32,6 +41,18 @@ const statusConfig: Record<SessionStatus, { label: string; className: string }> 
     label: 'Pending',
     className: 'bg-slate-50 text-slate-600 border-slate-200',
   },
+  cancelled: {
+    label: 'Cancelled',
+    className: 'bg-rose-50 text-rose-700 border-rose-200',
+  },
+  refund_requested: {
+    label: 'Refund Requested',
+    className: 'bg-amber-50 text-amber-700 border-amber-200',
+  },
+  refunded: {
+    label: 'Refunded',
+    className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  },
 };
 
 export const StatusBadge = ({ status, className }: StatusBadgeProps) => {
@@ -53,6 +74,9 @@ export const StatusBadge = ({ status, className }: StatusBadgeProps) => {
         status === 'completed' && 'bg-green-500',
         status === 'paid' && 'bg-amber-500',
         status === 'pending' && 'bg-slate-400',
+        status === 'cancelled' && 'bg-rose-500',
+        status === 'refund_requested' && 'bg-amber-500',
+        status === 'refunded' && 'bg-emerald-500',
       )} />
       {config.label}
     </span>

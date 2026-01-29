@@ -6,6 +6,9 @@ const NotFound = () => {
 
   useEffect(() => {
     console.error("404 Error: User attempted to access non-existent route:", location.pathname);
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent("cronox:route-error", { detail: { path: location.pathname } }));
+    }
   }, [location.pathname]);
 
   return (

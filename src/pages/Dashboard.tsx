@@ -5,9 +5,10 @@ import { Footer } from '@/components/layout/Footer';
 import { StatusBadge, type SessionStatus } from '@/components/ui/StatusBadge';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getBookings, getPayments } from '@/lib/api';
+import { getBookings, getPayments, getProfessionalMe } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { 
   Clock, 
@@ -69,6 +70,7 @@ const ProfessionalDashboard = () => {
     }>
   >([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [payments, setPayments] = useState<
     Array<{
       id: string;
@@ -79,6 +81,10 @@ const ProfessionalDashboard = () => {
       settledAt?: string;
     }>
   >([]);
+  const [onboardingStatus, setOnboardingStatus] = useState<{ complete: boolean; missing: string[] }>({
+    complete: true,
+    missing: [],
+  });
 
   useEffect(() => {
     let isMounted = true;
@@ -101,6 +107,7 @@ const ProfessionalDashboard = () => {
         if (isMounted) {
           setBookings(Array.isArray(bookingData) ? bookingData : []);
           setPayments(Array.isArray(paymentData) ? paymentData : []);
+          setLoadError(null);
         }
       } catch (err: unknown) {
         if (!isMounted) {
@@ -108,6 +115,7 @@ const ProfessionalDashboard = () => {
         }
         if (showToast) {
           const message = err instanceof Error ? err.message : 'Please try again in a moment.';
+          setLoadError(message);
           toast({
             title: 'Unable to load sessions',
             description: message,
@@ -131,6 +139,72 @@ const ProfessionalDashboard = () => {
       window.clearInterval(interval);
     };
   }, [token, toast]);
+
+  useEffect(() => {
+    if (!token) {
+      setOnboardingStatus({ complete: true, missing: [] });
+      return;
+    }
+
+    const profileStorageKey = 'cronox.profile';
+    const readLocalProfile = () => {
+      if (typeof localStorage === 'undefined') {
+        return { fullName: '', bio: '', availabilitySummary: '' };
+      }
+      try {
+        const raw = localStorage.getItem(profileStorageKey);
+        if (!raw) {
+          return { fullName: '', bio: '', availabilitySummary: '' };
+        }
+        const parsed = JSON.parse(raw) as {
+          fullName?: string;
+          bio?: string;
+          availabilitySummary?: string;
+        };
+        return {
+          fullName: parsed.fullName ?? '',
+          bio: parsed.bio ?? '',
+          availabilitySummary: parsed.availabilitySummary ?? '',
+        };
+      } catch {
+        return { fullName: '', bio: '', availabilitySummary: '' };
+      }
+    };
+
+    let isMounted = true;
+    const loadOnboarding = async () => {
+      try {
+        const localProfile = readLocalProfile();
+        const data = await getProfessionalMe();
+        const skills = Array.isArray((data as { skills?: unknown }).skills) ? ((data as { skills?: string[] }).skills ?? []) : [];
+        const missing: string[] = [];
+        if (!localProfile.fullName.trim()) {
+          missing.push('Full name');
+        }
+        if (!localProfile.bio.trim()) {
+          missing.push('Bio');
+        }
+        if (!localProfile.availabilitySummary.trim()) {
+          missing.push('Availability summary');
+        }
+        if (skills.length === 0) {
+          missing.push('Skills');
+        }
+        if (isMounted) {
+          setOnboardingStatus({ complete: missing.length === 0, missing });
+        }
+      } catch {
+        if (isMounted) {
+          setOnboardingStatus({ complete: false, missing: ['Profile data'] });
+        }
+      }
+    };
+
+    loadOnboarding();
+    return () => {
+      isMounted = false;
+    };
+  }, [token]);
 
   const resolveSessionStatus = useCallback(
     (booking: { status: string; session?: { status?: string } }) =>
@@ -189,6 +263,17 @@ const ProfessionalDashboard = () => {
 
   return (
     <div className="space-y-8">
+      <ErrorNotice title="Unable to load dashboard data" message={loadError} />
+      {!onboardingStatus.complete && (
+        <ErrorNotice
+          title="Complete onboarding to list sessions"
+          message={`Missing: ${onboardingStatus.missing.join(', ')}.`}
+          actionLabel="Update Profile"
+          onAction={() => {
+            window.location.assign('/profile');
+          }}
+        />
+      )}
       {/* Quick Actions */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -221,8 +306,14 @@ const ProfessionalDashboard = () => {
             bgColor: 'bg-status-available/10',
             content: (
               <div>
-                <p className="text-2xl font-bold text-foreground mb-1">Ready</p>
-                <p className="text-xs text-muted-foreground">Your profile and availability are set up. This section will show your real-time readiness status based on profile completion and active availability.</p>
+                <p className="text-2xl font-bold text-foreground mb-1">
+                  {onboardingStatus.complete ? 'Ready' : 'Incomplete'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {onboardingStatus.complete
+                    ? 'Your profile details are complete and ready for booking.'
+                    : `Finish ${onboardingStatus.missing.join(', ')} to unlock listings.`}
+                </p>
               </div>
             )
           },
@@ -468,6 +559,7 @@ const BuyerDashboard = () => {
     }>
   >([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [payments, setPayments] = useState<
     Array<{
       id: string;
@@ -500,6 +592,7 @@ const BuyerDashboard = () => {
         if (isMounted) {
           setBookings(Array.isArray(bookingData) ? bookingData : []);
           setPayments(Array.isArray(paymentData) ? paymentData : []);
+          setLoadError(null);
         }
       } catch (err: unknown) {
         if (!isMounted) {
@@ -507,6 +600,7 @@ const BuyerDashboard = () => {
         }
         if (showToast) {
           const message = err instanceof Error ? err.message : 'Please try again in a moment.';
+          setLoadError(message);
           toast({
             title: 'Unable to load sessions',
             description: message,
@@ -574,6 +668,7 @@ const BuyerDashboard = () => {
 
   return (
     <div className="space-y-8">
+      <ErrorNotice title="Unable to load dashboard data" message={loadError} />
       {/* Quick Actions */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}

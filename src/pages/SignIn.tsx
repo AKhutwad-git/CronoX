@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { Navbar } from '@/components/layout/Navbar';
 import { useRole } from '@/contexts/RoleContext';
 import { Eye, EyeOff, Clock, Loader2 } from 'lucide-react';
@@ -12,7 +13,7 @@ import { apiRequest, type ApiRequestError } from '@/lib/api';
 
 const SignIn = () => {
   const navigate = useNavigate();
-  const { setRole, setToken, setAuthenticated } = useRole();
+  const { setToken } = useRole();
   const { toast } = useToast();
   
   const [showPassword, setShowPassword] = useState(false);
@@ -77,9 +78,7 @@ const SignIn = () => {
         throw new Error('Login succeeded but no token was returned.');
       }
 
-      setRole(data.role ?? selectedRole);
       setToken(data.token);
-      setAuthenticated(true);
 
       toast({
         title: 'Welcome back!',
@@ -213,11 +212,7 @@ const SignIn = () => {
                 </div>
               </div>
 
-              {formError && (
-                <p className="text-sm text-destructive" role="alert">
-                  {formError}
-                </p>
-              )}
+              <ErrorNotice title="Sign in failed" message={formError} />
 
               <Button 
                 type="submit" 

@@ -1,11 +1,12 @@
-export type PaymentStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type PaymentStatus = 'pending' | 'settled' | 'failed' | 'refund_requested' | 'refunded';
 
 export interface Payment {
   id: string;
-  orderId: string;
-  amount: number; // in INR
+  sessionId: string;
+  amount: number;
+  currency: string;
   status: PaymentStatus;
-  erpInvoiceId?: string;
+  erpInvoiceRef?: string;
+  settledAt?: Date;
   createdAt: Date;
-  updatedAt: Date;
 }

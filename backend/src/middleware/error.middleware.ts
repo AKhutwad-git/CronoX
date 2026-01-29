@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
-import { logger } from '../lib/logger';
+import { logger, emitTelemetryEvent } from '../lib/logger';
 
 export interface ErrorWithStatus extends Error {
     status?: number;
@@ -26,6 +26,14 @@ export const globalErrorHandler: ErrorRequestHandler = (
         path: req.path,
         method: req.method,
         statusCode,
+    });
+
+    emitTelemetryEvent('error', {
+        correlationId,
+        path: req.path,
+        method: req.method,
+        statusCode,
+        message: err.message
     });
 
     // Don't expose internal error details in production

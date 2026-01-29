@@ -1,4 +1,19 @@
 type LogMeta = Record<string, unknown> | undefined;
+type TelemetryEvent = 'request' | 'metric' | 'error';
+type TelemetryHooks = Partial<Record<TelemetryEvent, (payload: Record<string, unknown>) => void>>;
+
+let telemetryHooks: TelemetryHooks = {};
+
+export const setTelemetryHooks = (hooks: TelemetryHooks) => {
+  telemetryHooks = { ...telemetryHooks, ...hooks };
+};
+
+export const emitTelemetryEvent = (event: TelemetryEvent, payload: Record<string, unknown>) => {
+  const handler = telemetryHooks[event];
+  if (handler) {
+    handler(payload);
+  }
+};
 
 export const logger = {
   info: (message: string, meta?: LogMeta) => {
