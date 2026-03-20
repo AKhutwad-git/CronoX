@@ -65,7 +65,8 @@ const ProfessionalDashboard = () => {
       id: string;
       scheduledAt: string;
       status: 'scheduled' | 'completed' | 'cancelled';
-      token?: { price?: number };
+      buyer?: { email?: string };
+      token?: { price?: number; durationMinutes?: number };
       session?: { id: string; status: 'pending' | 'active' | 'completed' | 'failed' };
     }>
   >([]);
@@ -103,7 +104,7 @@ const ProfessionalDashboard = () => {
         if (showLoading) {
           setIsLoading(true);
         }
-        const [bookingData, paymentData] = await Promise.all([getBookings(token), getPayments(token)]);
+        const [bookingData, paymentData] = await Promise.all([getBookings(), getPayments()]);
         if (isMounted) {
           setBookings(Array.isArray(bookingData) ? bookingData : []);
           setPayments(Array.isArray(paymentData) ? paymentData : []);
@@ -285,6 +286,12 @@ const ProfessionalDashboard = () => {
             <Link to="/create-session">
               <Plus size={18} className="mr-2" />
               Create New Session
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="lg">
+            <Link to="/availability">
+              <Calendar size={18} className="mr-2" />
+              Manage Availability
             </Link>
           </Button>
           <Button asChild variant="outline" size="lg">
@@ -554,7 +561,7 @@ const BuyerDashboard = () => {
       id: string;
       scheduledAt: string;
       status: 'scheduled' | 'completed' | 'cancelled';
-      token?: { price?: number; professional?: { user?: { email?: string } } };
+      token?: { price?: number; durationMinutes?: number; professional?: { user?: { email?: string } } };
       session?: { id: string; status: 'pending' | 'active' | 'completed' | 'failed' };
     }>
   >([]);
@@ -588,7 +595,7 @@ const BuyerDashboard = () => {
         if (showLoading) {
           setIsLoading(true);
         }
-        const [bookingData, paymentData] = await Promise.all([getBookings(token), getPayments(token)]);
+        const [bookingData, paymentData] = await Promise.all([getBookings(), getPayments()]);
         if (isMounted) {
           setBookings(Array.isArray(bookingData) ? bookingData : []);
           setPayments(Array.isArray(paymentData) ? paymentData : []);

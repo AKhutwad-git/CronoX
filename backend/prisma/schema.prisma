@@ -82,6 +82,7 @@ model User {
   professional  Professional?
   metrics       Metric[]
   focusScores   FocusScore[]
+  biometricConsents BiometricConsent[]
   ownedTokens   TimeToken[] @relation("TokenOwner")
   orders        MarketplaceOrder[]
   bookings      Booking[]
@@ -120,6 +121,22 @@ model Metric {
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, recordedAt])
+}
+
+/////////////////////////////////////////////////
+
+model BiometricConsent {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  metricType String   @map("metric_type")
+  source     String
+  grantedAt  DateTime @default(now()) @map("granted_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, metricType, source])
 }
 
 /////////////////////////////////////////////////

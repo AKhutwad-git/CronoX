@@ -78,7 +78,8 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return null;
       }
       if (!isTokenValid(stored)) {
-        localStorage.removeItem('cronox.token');
+        // Token is invalid/expired but do not force clear it automatically.
+        // The user might be able to refresh it later or auth context can handle it via an explicit logout.
         return null;
       }
       return stored;

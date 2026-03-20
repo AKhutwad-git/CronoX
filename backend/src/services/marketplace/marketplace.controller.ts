@@ -5,8 +5,7 @@ import { MarketplaceOrderRepository } from './marketplace-order.repository';
 import { AuditLogRepository } from '../auditing/audit-log.repository';
 import { ProfessionalRepository } from '../users/professional.repository';
 import { AuthenticatedRequest } from '../../middleware/auth.middleware';
-import { TimeTokenState } from './marketplace.model';
-import { Prisma, TimeToken } from '@prisma/client';
+import { Prisma, TimeToken, TokenState } from '@prisma/client';
 import { logger } from '../../lib/logger';
 
 const timeTokenRepository = new TimeTokenRepository();
@@ -36,11 +35,11 @@ type MintTokenBody = {
   expertiseTags?: string[];
 };
 
-const isTimeTokenState = (value: string): value is TimeTokenState =>
+const isTokenState = (value: string): value is TokenState =>
   ['drafted', 'listed', 'purchased', 'consumed', 'cancelled'].includes(value);
 
-const canTransition = (from: TimeTokenState, to: TimeTokenState): boolean => {
-  const validTransitions: Record<TimeTokenState, TimeTokenState[]> = {
+const canTransition = (from: TokenState, to: TokenState): boolean => {
+  const validTransitions: Record<TokenState, TokenState[]> = {
     drafted: ['listed', 'cancelled'],
     listed: ['purchased', 'cancelled'],
     purchased: ['consumed', 'cancelled'],
@@ -100,7 +99,7 @@ export const mintTimeToken: RequestHandler = async (req, res: Response) => {
 const transitionTokenState = async (
   req: AuthenticatedRequest,
   res: Response,
-  newState: TimeTokenState
+  newState: TokenState
 ) => {
   const { id } = req.params;
   const user = req.user;
@@ -119,7 +118,7 @@ const transitionTokenState = async (
       }
     }
 
-    if (!isTimeTokenState(token.state) || !canTransition(token.state, newState)) {
+    if (!isTokenState(token.state) || !canTransition(token.state, newState)) {
       return res.status(400).json({ message: `Invalid state transition from ${token.state} to ${newState}` });
     }
 
@@ -202,29 +201,18 @@ export const purchaseTimeToken: RequestHandler = async (req, res: Response) => {
     const buyerId = user?.userId;
     if (!buyerId) return res.status(401).json({ message: 'Unauthorized' });
 
-    // Use createWithValidation for Atomic-like operation (Repo handles Order creation logic part)
-    // But Repo createWithValidation checks TOKEN state.
-    // So we should NOT update token state directly HERE if Repo does it.
-    // Checking MarketplaceOrderRepository.createWithValidation (Step 603): It updates timeToken state to purchased.
-    // So we just call orderRepository.createWithValidation.
-
-    // BUT we need token.price for validation/payment logic.
-    // Controller can pass it.
-
-    // Note: older logic updated token state here.
-    // I moved that logic to OrderRepository.createWithValidation.
-    // So I call that.
-
-    const newOrder = await orderRepository.createWithValidation({
-      timeTokenId: token.id,
-      buyerId,
-      pricePaid: Number(token.price),
-      currency: token.currency || 'INR'
+    // Phase 4: Create a Stripe PaymentIntent instead of immediate order creation
+    const { createPaymentIntent } = await import('../payments/stripe.service');
+    
+    const paymentIntent = await createPaymentIntent(Number(token.price), token.currency || 'INR', {
+      tokenId: token.id,
+      buyerId: buyerId
     });
 
-    clearListedTokensCache();
-    await emitEvent('TokenPurchased', { tokenId: token.id, buyerId, price: token.price });
-    res.json({ token, order: newOrder });
+    // We do not create the MarketplaceOrder here anymore. 
+    // The Stripe Webhook (stripe.controller.ts) will create it upon payment success.
+
+    res.json({ token, clientSecret: paymentIntent.client_secret });
 
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';

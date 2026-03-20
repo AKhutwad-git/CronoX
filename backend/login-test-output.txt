@@ -1,0 +1,7 @@
+{"level":"info","message":"[auth] Login attempt","timestamp":"2026-03-16T20:12:05.701Z","correlationId":"test-id","email":"test@example.com"}
+Status set to: 500
+JSON response: {
+  "message": "Error logging in",
+  "error": "Tenant or user not found",
+  "correlationId": "test-id"
+}

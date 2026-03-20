@@ -4,7 +4,85 @@ import { AuthenticatedRequest } from '../../middleware/auth.middleware';
 import prisma from '../../lib/prisma';
 import { SessionRepository } from './session.repository';
 import { ProfessionalRepository } from '../users/professional.repository';
+import { PaymentRepository } from '../payments/payment.repository';
+import { AuditLogRepository } from '../auditing/audit-log.repository';
 import { logger } from '../../lib/logger';
+
+// Payment and audit repositories used for post-session settlement
+const paymentRepository = new PaymentRepository();
+const auditLogRepository = new AuditLogRepository();
+
+const settlePaymentForSession = async (sessionId: string): Promise<void> => {
+  try {
+    const existingPayment = await paymentRepository.findBySessionId(sessionId);
+    let paymentId: string;
+    let paymentAmount: number;
+
+    if (existingPayment) {
+      if (existingPayment.status !== 'pending') {
+        logger.info('[sessions] payment already processed for session, skipping', { sessionId, paymentId: existingPayment.id, status: existingPayment.status });
+        return;
+      }
+      paymentId = existingPayment.id;
+      paymentAmount = Number(existingPayment.amount);
+    } else {
+      // Traverse: session → booking → token → price fallback if payment was not created
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        include: {
+          booking: {
+            include: {
+              token: { select: { price: true, currency: true } },
+            },
+          },
+        },
+      });
+
+      if (!session?.booking?.token) {
+        logger.warn('[sessions] unable to resolve token price for payment settlement', { sessionId });
+        return;
+      }
+
+      paymentAmount = Number(session.booking.token.price);
+      const newPayment = await paymentRepository.createWithValidation({ sessionId, amount: paymentAmount, status: 'pending' });
+      paymentId = newPayment.id;
+    }
+
+    // Determine currency for audit (default to INR if not stored elsewhere)
+    let currency = 'INR';
+    const sWithToken = await prisma.session.findUnique({
+      where: { id: sessionId },
+      include: { booking: { include: { token: { select: { currency: true } } } } }
+    });
+    if (sWithToken?.booking?.token?.currency) {
+      currency = sWithToken.booking.token.currency;
+    }
+
+    await paymentRepository.updatePaymentStatus(paymentId, 'settled');
+    await prisma.payment.update({
+      where: { id: paymentId },
+      data: { settledAt: new Date() },
+    });
+
+    await auditLogRepository.create({
+      entityType: 'Payment',
+      entityId: paymentId,
+      eventType: 'PaymentSettled',
+      metadata: {
+        sessionId,
+        amount: paymentAmount,
+        currency,
+        settledAt: new Date().toISOString(),
+        trigger: 'session_completed',
+      } as Prisma.InputJsonValue,
+    });
+
+    logger.info('[sessions] payment settled', { sessionId, paymentId, amount: paymentAmount, currency });
+  } catch (error: unknown) {
+    // Payment failure must NOT fail the session update — log and continue
+    logger.error('[sessions] payment settlement failed (non-fatal)', error, { sessionId });
+  }
+};
 
 const sessionRepository = new SessionRepository();
 const professionalRepository = new ProfessionalRepository();
@@ -200,6 +278,12 @@ export const endSession = async (req: AuthenticatedRequest, res: Response) => {
         }
 
         const updated = await sessionRepository.updateSessionStatus(id, status);
+
+        // Auto-settle payment when session completes successfully
+        if (status === 'completed') {
+          await settlePaymentForSession(id);
+        }
+
         logger.info('[sessions] session ended', { correlationId, sessionId: id, status, userId: user.userId, role: user.role });
         res.json(updated);
     } catch (error: unknown) {

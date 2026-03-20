@@ -13,6 +13,12 @@ import { User, Clock, ArrowLeft, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useRole } from '@/contexts/RoleContext';
 import { apiRequest, createBooking, endSession, getBookings, getWeeklyAvailability, purchaseMarketplaceToken, startSession } from '@/lib/api';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements } from '@stripe/react-stripe-js';
+import { CheckoutForm } from '@/components/ui/CheckoutForm';
+
+// Replace with actual publishable key in production
+const stripePromise = loadStripe('pk_test_placeholder_key_for_development');
 
 type TokenDetails = {
   id: string;
@@ -207,78 +213,59 @@ const MarketplaceTokenDetails = () => {
   const purchaseLabel =
     token?.state === 'listed' ? 'Purchase Token' : token?.state === 'purchased' ? 'Purchased' : 'Not Available';
 
+  const [clientSecret, setClientSecret] = useState<string | null>(null);
+
   const handlePurchase = async () => {
-    if (!id || !token) {
-      return;
-    }
-
+    if (!id || !token) return;
     if (role !== 'buyer') {
-      toast({
-        title: 'Buyer account required',
-        description: 'Only buyers can purchase session tokens.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Buyer account required', description: 'Only buyers can purchase session tokens.', variant: 'destructive' });
       return;
     }
-
     if (!authToken) {
-      toast({
-        title: 'Sign in required',
-        description: 'Please sign in as a buyer to purchase this token.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Sign in required', description: 'Please sign in as a buyer to purchase this token.', variant: 'destructive' });
       return;
     }
-
     if (token.state !== 'listed') {
-      toast({
-        title: 'Session unavailable',
-        description: 'This token is no longer available for purchase.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Session unavailable', description: 'This token is no longer available for purchase.', variant: 'destructive' });
       return;
     }
-
-    if (isPurchasing) {
-      return;
-    }
+    if (isPurchasing) return;
 
     try {
       setIsPurchasing(true);
       setPurchaseError(null);
       const response = await purchaseMarketplaceToken(id);
-      const nextToken =
-        response && typeof response === 'object' && 'token' in response
-          ? (response as { token?: TokenDetails }).token
-          : undefined;
+      
+      const { clientSecret: secret } = response as { clientSecret?: string };
+      
+      if (secret) {
+        setClientSecret(secret);
+      } else {
+        throw new Error('No payment intent returned.');
+      }
 
-      setToken((current) => {
-        if (!current) {
-          return nextToken ?? null;
-        }
-        return {
-          ...current,
-          ...(nextToken ?? {}),
-          state: nextToken?.state ?? 'purchased',
-        };
-      });
-
-      toast({
-        title: 'Purchase successful',
-        description: 'This session token is now yours.',
-      });
-      await fetchToken();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Unable to purchase this token.';
+      const message = err instanceof Error ? err.message : 'Unable to initiate purchase.';
       setPurchaseError(message);
-      toast({
-        title: 'Purchase failed',
-        description: message,
-        variant: 'destructive',
-      });
+      toast({ title: 'Purchase failed', description: message, variant: 'destructive' });
     } finally {
       setIsPurchasing(false);
     }
+  };
+
+  const onPaymentSuccess = async () => {
+    toast({
+      title: 'Payment successful',
+      description: 'Your payment was processed. Your session token is being secured.',
+    });
+    setClientSecret(null);
+    
+    // Webhook takes a moment to process. We poll or just refresh.
+    // For simplicity, we just reload the token data after a short delay
+    setTimeout(async () => {
+      await fetchToken();
+      // If token is now purchased, we are good.
+    }, 2000);
   };
 
   const canBook = role === 'buyer' && token?.state === 'purchased' && !booking;
@@ -551,29 +538,42 @@ const MarketplaceTokenDetails = () => {
             </div>
 
             {role === 'buyer' && (
-              <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-t border-border pt-6">
+              <div className="mt-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 border-t border-border pt-6">
                 <div className="flex-1 space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    {token.state === 'listed'
-                      ? 'Ready to purchase this session token.'
-                      : 'This session token is no longer available for purchase.'}
-                  </p>
-                  <ErrorNotice title="Purchase failed" message={purchaseError} />
-                </div>
-                <Button
-                  onClick={handlePurchase}
-                  disabled={!isPurchasable || isPurchasing}
-                  className="bg-status-booked hover:bg-status-booked/90 text-white"
-                >
-                  {isPurchasing ? (
+                  {!clientSecret ? (
                     <>
-                      <Loader2 className="mr-2 animate-spin" size={16} />
-                      Processing Purchase
+                      <p className="text-sm text-muted-foreground">
+                        {token.state === 'listed'
+                          ? 'Ready to purchase this session token.'
+                          : 'This session token is no longer available for purchase.'}
+                      </p>
+                      <ErrorNotice title="Purchase failed" message={purchaseError} />
                     </>
                   ) : (
-                    purchaseLabel
+                    <div className="bg-card border border-border rounded-xl p-4 w-full">
+                      <p className="font-semibold text-sm mb-4">Complete Payment</p>
+                      <Elements stripe={stripePromise} options={{ clientSecret }}>
+                        <CheckoutForm onSuccess={onPaymentSuccess} onError={(err) => setPurchaseError(err)} />
+                      </Elements>
+                    </div>
                   )}
-                </Button>
+                </div>
+                {!clientSecret && (
+                  <Button
+                    onClick={handlePurchase}
+                    disabled={!isPurchasable || isPurchasing}
+                    className="bg-status-booked hover:bg-status-booked/90 text-white mt-2 sm:mt-0"
+                  >
+                    {isPurchasing ? (
+                      <>
+                        <Loader2 className="mr-2 animate-spin" size={16} />
+                        Processing Purchase
+                      </>
+                    ) : (
+                      purchaseLabel
+                    )}
+                  </Button>
+                )}
               </div>
             )}
 

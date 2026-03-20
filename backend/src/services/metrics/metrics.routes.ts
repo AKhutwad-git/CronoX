@@ -1,9 +1,25 @@
 import { Router } from 'express';
-import { createMetric } from './metrics.controller';
+import {
+  createMetric,
+  createBiometricBatch,
+  createBiometricUpload,
+  createDeviceBiometric,
+  listBiometricConsents,
+  grantBiometricConsent,
+  revokeBiometricConsent
+} from './metrics.controller';
 import { authenticate } from '../../middleware/auth.middleware';
 
-const router = Router();
+const metricsRouter = Router();
+const biometricsRouter = Router();
 
-router.post('/', authenticate, createMetric);
+metricsRouter.post('/', authenticate, createMetric);
+biometricsRouter.post('/upload', authenticate, createBiometricUpload);
+biometricsRouter.post('/batch', authenticate, createBiometricBatch);
+biometricsRouter.post('/device', authenticate, createDeviceBiometric);
+biometricsRouter.get('/consents', authenticate, listBiometricConsents);
+biometricsRouter.post('/consents', authenticate, grantBiometricConsent);
+biometricsRouter.post('/consents/:id/revoke', authenticate, revokeBiometricConsent);
 
-export default router;
+export { biometricsRouter };
+export default metricsRouter;

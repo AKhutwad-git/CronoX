@@ -1,13 +1,12 @@
 import prisma from '../../lib/prisma';
 import { BaseRepository, RepositoryModel } from '../../lib/base-repository';
-import { Prisma, TimeToken } from '@prisma/client';
-import { TimeTokenState } from './marketplace.model';
+import { Prisma, TimeToken, TokenState } from '@prisma/client';
 
 export interface CreateTimeTokenData {
   professionalId: string;
   duration: number;
   price: number;
-  state?: TimeTokenState;
+  state?: TokenState;
   title?: string;
   description?: string;
   topics?: string[];
@@ -16,7 +15,7 @@ export interface CreateTimeTokenData {
 
 export interface UpdateTimeTokenData {
   buyerId?: string;
-  state?: TimeTokenState;
+  state?: TokenState;
   duration?: number;
   price?: number;
 }
@@ -48,7 +47,7 @@ export class TimeTokenRepository extends BaseRepository<
     });
   }
 
-  async findByState(state: TimeTokenState) {
+  async findByState(state: TokenState) {
     try {
       console.log('[time-token.repository] findByState start', { state });
       const tokens = await prisma.timeToken.findMany({
@@ -281,8 +280,8 @@ export class TimeTokenRepository extends BaseRepository<
     });
   }
 
-  private canTransition(from: TimeTokenState, to: TimeTokenState): boolean {
-    const validTransitions: Record<TimeTokenState, TimeTokenState[]> = {
+  private canTransition(from: TokenState, to: TokenState): boolean {
+    const validTransitions: Record<TokenState, TokenState[]> = {
       drafted: ['listed', 'cancelled'],
       listed: ['purchased', 'cancelled'],
       purchased: ['consumed', 'cancelled'],
@@ -292,7 +291,7 @@ export class TimeTokenRepository extends BaseRepository<
     return validTransitions[from]?.includes(to) || false;
   }
 
-  async updateState(tokenId: string, newState: TimeTokenState, buyerId?: string) {
+  async updateState(tokenId: string, newState: TokenState, buyerId?: string) {
     const token = await this.findById(tokenId);
     if (!token) {
       throw new Error('Token not found');
@@ -310,7 +309,7 @@ export class TimeTokenRepository extends BaseRepository<
     return this.update(tokenId, updateData);
   }
 
-  async updateStatus(tokenId: string, newState: TimeTokenState, buyerId?: string) {
+  async updateStatus(tokenId: string, newState: TokenState, buyerId?: string) {
     // Backward compatibility shim
     return this.updateState(tokenId, newState, buyerId);
   }

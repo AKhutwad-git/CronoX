@@ -15,14 +15,20 @@ import marketplaceRoutes from './services/marketplace/marketplace.routes';
 import schedulingRoutes from './services/scheduling/scheduling.routes';
 import paymentRoutes from './services/payments/payment.routes';
 import pricingRoutes from './services/pricing/pricing.routes';
-import metricsRoutes from './services/metrics/metrics.routes';
+import metricsRoutes, { biometricsRouter } from './services/metrics/metrics.routes';
 import auditingRoutes from './services/auditing/auditing.routes';
 import sessionRoutes from './services/scheduling/session.routes';
+
+import stripeRoutes from './services/payments/stripe.routes';
 
 const app = express();
 
 // Middleware
 app.use(cors());
+
+// Webhook must be parsed as raw body, so we put it before express.json()
+app.use('/api/webhooks/stripe', stripeRoutes);
+
 app.use(express.json());
 app.use(correlationIdMiddleware);
 
@@ -40,6 +46,7 @@ app.use('/api/scheduling', sessionRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/pricing', pricingRoutes);
 app.use('/api/metrics', metricsRoutes);
+app.use('/api/biometrics', biometricsRouter);
 app.use('/api/auditing', auditingRoutes);
 
 // 404 handler (must be after all routes)

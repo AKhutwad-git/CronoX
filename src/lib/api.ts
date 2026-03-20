@@ -120,16 +120,7 @@ export const apiRequest = async <TResponse>(path: string, init?: ApiRequestInit)
 
   if (!response.ok) {
     if (response.status === 401) {
-      try {
-        if (typeof localStorage !== "undefined") {
-          localStorage.removeItem("cronox.token");
-        }
-        if (typeof window !== "undefined") {
-          window.location.assign("/signin");
-        }
-      } catch (error) {
-        console.warn("[api] Unable to clear auth state after 401 response.", error);
-      }
+      console.warn("[api] Received 401 Unauthorized response. Auth context will handle clearing state.");
     }
     const message =
       (data && typeof data === "object" && "message" in data
@@ -249,4 +240,19 @@ export const endSession = async (sessionId: string, status: "completed" | "faile
     body: JSON.stringify({
       status,
     }),
+  });
+
+export const getBiometricConsents = async () =>
+  apiRequest(`/biometrics/consents`, {
+  });
+
+export const grantBiometricConsent = async (payload: { metricType: string; source: string }) =>
+  apiRequest(`/biometrics/consents`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const revokeBiometricConsent = async (consentId: string) =>
+  apiRequest(`/biometrics/consents/${consentId}/revoke`, {
+    method: "POST",
   });
