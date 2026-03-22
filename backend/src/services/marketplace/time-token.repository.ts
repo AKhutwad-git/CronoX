@@ -79,7 +79,21 @@ export class TimeTokenRepository extends BaseRepository<
     pageSize: number;
   }) {
     const { search, skills, topics, minPrice, maxPrice, page, pageSize } = params;
-    const filters: Prisma.TimeTokenWhereInput[] = [{ state: 'listed' }];
+    const now = new Date();
+    const filters: Prisma.TimeTokenWhereInput[] = [
+      { state: 'listed' },
+      {
+        professional: {
+          user: {
+            focusScores: {
+              some: {
+                validUntil: { gt: now }
+              }
+            }
+          }
+        }
+      }
+    ];
 
     if (typeof minPrice === 'number' || typeof maxPrice === 'number') {
       filters.push({
@@ -155,7 +169,21 @@ export class TimeTokenRepository extends BaseRepository<
     pageSize: number;
   }) {
     const { search, skills, topics, minPrice, maxPrice, page, pageSize } = params;
-    const filters: Prisma.TimeTokenWhereInput[] = [{ state: 'listed' }];
+    const now = new Date();
+    const filters: Prisma.TimeTokenWhereInput[] = [
+      { state: 'listed' },
+      {
+        professional: {
+          user: {
+            focusScores: {
+              some: {
+                validUntil: { gt: now }
+              }
+            }
+          }
+        }
+      }
+    ];
 
     if (typeof minPrice === 'number' || typeof maxPrice === 'number') {
       filters.push({
@@ -222,8 +250,21 @@ export class TimeTokenRepository extends BaseRepository<
               verificationStatus: true,
               user: {
                 select: {
+                  id: true,
                   email: true,
-                  role: true
+                  role: true,
+                  focusScores: {
+                    where: {
+                      validUntil: { gt: now }
+                    },
+                    orderBy: { computedAt: 'desc' },
+                    take: 1,
+                    select: {
+                      score: true,
+                      confidence: true,
+                      validUntil: true
+                    }
+                  }
                 }
               }
             }

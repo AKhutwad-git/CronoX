@@ -20,6 +20,11 @@ interface SessionCardProps {
   actionLabel?: string;
   onAction?: () => void;
   variant?: 'default' | 'compact';
+  focusScore?: number | null;
+  focusConfidence?: number | null;
+  focusValidUntil?: string | null;
+  performanceTier?: string | null;
+  showPerformanceVerified?: boolean;
 }
 
 export const SessionCard = ({
@@ -36,8 +41,14 @@ export const SessionCard = ({
   actionLabel = 'View Details',
   onAction,
   variant = 'default',
+  focusScore,
+  focusConfidence,
+  focusValidUntil,
+  performanceTier,
+  showPerformanceVerified,
 }: SessionCardProps) => {
   const isPlaceholder = !professionalName;
+  const hasFocusData = typeof focusScore === 'number' && typeof focusConfidence === 'number' && Boolean(focusValidUntil);
 
   return (
     <div
@@ -97,6 +108,27 @@ export const SessionCard = ({
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {hasFocusData && (
+        <div className="mb-4 rounded-lg border border-border px-3 py-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">Focus Score</p>
+            {performanceTier ? (
+              <Badge variant="outline" className="text-[10px] h-5">
+                {performanceTier}
+              </Badge>
+            ) : null}
+          </div>
+          <div className="mt-1 flex items-end justify-between">
+            <p className="text-lg font-bold text-foreground">{focusScore}</p>
+            <p className="text-xs text-muted-foreground">Confidence {focusConfidence}%</p>
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">Valid until {new Date(focusValidUntil as string).toLocaleTimeString()}</p>
+          {showPerformanceVerified ? (
+            <Badge variant="secondary" className="mt-2 text-[10px] h-5">AI Performance Verified</Badge>
+          ) : null}
         </div>
       )}
 

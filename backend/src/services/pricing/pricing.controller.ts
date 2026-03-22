@@ -26,7 +26,7 @@ export const calculatePrice = async (req: Request, res: Response) => {
     }
 
     const { getRecommendedPricing } = await import('./pricing-engine.service');
-    const { baseRate, focusScore, recommendedRate } = await getRecommendedPricing(professional.userId);
+    const { baseRate, focusScore, recommendedRate, multiplier, volatilityPenalty } = await getRecommendedPricing(professional.userId);
 
     // Persist pricing inputs for audit -> AuditLog
     await auditLogRepository.create({
@@ -36,12 +36,12 @@ export const calculatePrice = async (req: Request, res: Response) => {
       metadata: {
         modelVersion: PRICING_MODEL_VERSION,
         inputs: { baseRate, focusScore },
-        output: { finalPrice: recommendedRate }
+        output: { finalPrice: recommendedRate, multiplier, volatilityPenalty }
       } as Prisma.InputJsonValue
     });
 
-    logger.info('[pricing] price calculated via engine', { correlationId, professionalId, finalPrice: recommendedRate, focusScore });
-    res.json({ price: recommendedRate, focusScore, baseRate });
+    logger.info('[pricing] price calculated via engine', { correlationId, professionalId, finalPrice: recommendedRate, focusScore, multiplier, volatilityPenalty });
+    res.json({ price: recommendedRate, focusScore, baseRate, multiplier, volatilityPenalty });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     logger.error('[pricing] price calculation failed', error, { correlationId, professionalId });

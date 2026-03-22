@@ -12,13 +12,11 @@ import { TrustBadge } from '@/components/ui/TrustBadge';
 import { User, Clock, ArrowLeft, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useRole } from '@/contexts/RoleContext';
-import { apiRequest, createBooking, endSession, getBookings, getWeeklyAvailability, purchaseMarketplaceToken, startSession } from '@/lib/api';
+import { apiRequest, calculatePricing, createBooking, endSession, getBookings, getFocusScoreByUser, getWeeklyAvailability, purchaseMarketplaceToken, startSession } from '@/lib/api';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements } from '@stripe/react-stripe-js';
 import { CheckoutForm } from '@/components/ui/CheckoutForm';
-
-// Replace with actual publishable key in production
-const stripePromise = loadStripe('pk_test_placeholder_key_for_development');
+import { useQuery } from '@tanstack/react-query';
 
 type TokenDetails = {
   id: string;
@@ -36,10 +34,17 @@ type TokenDetails = {
     verificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
     skills?: string[];
     user?: {
+      id?: string;
       email?: string;
       role?: string;
     };
   };
+};
+
+type FocusScoreSnapshot = {
+  score: number;
+  confidence: number;
+  validUntil: string;
 };
 
 type BookingDetails = {
@@ -82,6 +87,33 @@ const MarketplaceTokenDetails = () => {
   const [bookingError, setBookingError] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [bookingLoadError, setBookingLoadError] = useState<string | null>(null);
+  const [clientSecret, setClientSecret] = useState<string | null>(null);
+
+  const stripePromise = useMemo(() => {
+    if (!clientSecret) {
+      return null;
+    }
+    const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY ?? 'pk_test_placeholder_key_for_development';
+    return loadStripe(publishableKey);
+  }, [clientSecret]);
+
+  const professionalUserId = token?.professional?.user?.id;
+
+  const { data: focusScore, isLoading: isLoadingFocusScore } = useQuery<FocusScoreSnapshot | null>({
+    queryKey: ['focusScore', professionalUserId],
+    queryFn: async () => {
+      if (!professionalUserId) {
+        return null;
+      }
+      try {
+        return await getFocusScoreByUser(professionalUserId);
+      } catch {
+        return null;
+      }
+    },
+    enabled: Boolean(professionalUserId),
+    refetchInterval: 30000,
+  });
 
   const status = useMemo<SessionStatus>(() => {
     if (!token?.state) return 'pending';
@@ -111,7 +143,6 @@ const MarketplaceTokenDetails = () => {
   }, [authToken, id, role]);
 
   useEffect(() => {
-    console.log('[marketplace] details route mount', { id });
     if (!id) {
       setError('Missing session id.');
       setIsLoading(false);
@@ -119,14 +150,11 @@ const MarketplaceTokenDetails = () => {
     }
 
     const loadToken = async () => {
-      console.log('[marketplace] details fetch start', { id });
       try {
-        const data = await fetchToken();
-        console.log('[marketplace] details fetch success', { id });
+        await fetchToken();
         setError(null);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Unable to load session details.';
-        console.log('[marketplace] details fetch error', { id, message });
         setError(message);
         toast({
           title: 'Unable to load session',
@@ -209,11 +237,79 @@ const MarketplaceTokenDetails = () => {
     };
   }, [token?.professionalId]);
 
-  const isPurchasable = role === 'buyer' && token?.state === 'listed';
-  const purchaseLabel =
-    token?.state === 'listed' ? 'Purchase Token' : token?.state === 'purchased' ? 'Purchased' : 'Not Available';
+  const performanceTier = useMemo(() => {
+    const score = focusScore?.score;
+    if (typeof score !== 'number') {
+      return null;
+    }
+    if (score >= 80) {
+      return { label: 'Premium', color: 'text-emerald-400 border-emerald-400/40 bg-emerald-400/10' };
+    }
+    if (score >= 60) {
+      return { label: 'Good', color: 'text-blue-400 border-blue-400/40 bg-blue-400/10' };
+    }
+    if (score >= 40) {
+      return { label: 'Average', color: 'text-amber-400 border-amber-400/40 bg-amber-400/10' };
+    }
+    return { label: 'Low', color: 'text-red-400 border-red-400/40 bg-red-400/10' };
+  }, [focusScore?.score]);
 
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const validUntilDate = useMemo(
+    () => (focusScore?.validUntil ? new Date(focusScore.validUntil) : null),
+    [focusScore?.validUntil],
+  );
+  const isExpired = validUntilDate ? validUntilDate.getTime() <= Date.now() : true;
+  const remainingValidity = useMemo(() => {
+    if (!validUntilDate) {
+      return null;
+    }
+    const diff = validUntilDate.getTime() - Date.now();
+    if (diff <= 0) {
+      return 'Expired';
+    }
+    const mins = Math.floor(diff / 60000);
+    return `${mins}m`;
+  }, [validUntilDate]);
+
+  const hasValidPerformanceData = Boolean(focusScore && !isExpired);
+  const adjustedMultiplier = focusScore ? 1 + (focusScore.score - 50) / 500 : 1;
+  const {
+    data: pricingData,
+  } = useQuery({
+    queryKey: ['pricing', token?.professionalId, focusScore?.validUntil],
+    queryFn: async () => {
+      if (!token?.professionalId) {
+        return null;
+      }
+      return calculatePricing(token.professionalId);
+    },
+    enabled: Boolean(token?.professionalId && hasValidPerformanceData),
+    refetchInterval: 30000,
+  });
+
+  const adjustedPrice = useMemo(() => {
+    if (pricingData?.price !== undefined) {
+      return Number(pricingData.price);
+    }
+    if (!token) {
+      return null;
+    }
+    return Number((Number(token.price) * adjustedMultiplier).toFixed(2));
+  }, [pricingData?.price, token, adjustedMultiplier]);
+  const basePrice = pricingData?.baseRate !== undefined ? Number(pricingData.baseRate) : token ? Number(token.price) : null;
+  const priceDeltaPercent = basePrice !== null && adjustedPrice !== null && basePrice > 0
+    ? Math.round(((adjustedPrice - basePrice) / basePrice) * 100)
+    : 0;
+
+  const isPurchasable = role === 'buyer' && token?.state === 'listed' && hasValidPerformanceData;
+  const purchaseLabel =
+    token?.state !== 'listed'
+      ? token?.state === 'purchased'
+        ? 'Purchased'
+        : 'Not Available'
+      : hasValidPerformanceData
+        ? 'Purchase Token'
+        : 'Unavailable';
 
   const handlePurchase = async () => {
     if (!id || !token) return;
@@ -227,6 +323,10 @@ const MarketplaceTokenDetails = () => {
     }
     if (token.state !== 'listed') {
       toast({ title: 'Session unavailable', description: 'This token is no longer available for purchase.', variant: 'destructive' });
+      return;
+    }
+    if (!hasValidPerformanceData) {
+      toast({ title: 'Session unavailable', description: 'Session expired due to outdated performance data.', variant: 'destructive' });
       return;
     }
     if (isPurchasing) return;
@@ -268,7 +368,7 @@ const MarketplaceTokenDetails = () => {
     }, 2000);
   };
 
-  const canBook = role === 'buyer' && token?.state === 'purchased' && !booking;
+  const canBook = role === 'buyer' && token?.state === 'purchased' && !booking && hasValidPerformanceData;
 
   const handleBooking = async () => {
     if (!token || !id) {
@@ -481,7 +581,7 @@ const MarketplaceTokenDetails = () => {
                   )}
                 </div>
               </div>
-              <StatusBadge status={status} />
+              <StatusBadge status={token.state === 'listed' && !hasValidPerformanceData ? 'pending' : status} />
             </div>
 
             <div className="grid sm:grid-cols-2 gap-6 mt-6">
@@ -495,7 +595,57 @@ const MarketplaceTokenDetails = () => {
               <div className="rounded-xl border border-border p-4">
                 <p className="text-xs text-muted-foreground mb-1">Session Price</p>
                 <PriceDisplay amount={Number(token.price)} size="lg" />
+                {adjustedPrice !== null && (
+                  <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                    <p>Base Price: ₹{(basePrice ?? Number(token.price)).toFixed(2)}</p>
+                    <p className="text-foreground font-semibold">Adjusted Price: ₹{adjustedPrice.toFixed(2)}</p>
+                    <p className={priceDeltaPercent >= 0 ? 'text-emerald-400' : 'text-amber-400'}>
+                      ({priceDeltaPercent >= 0 ? '+' : ''}{priceDeltaPercent}% based on performance)
+                    </p>
+                  </div>
+                )}
               </div>
+            </div>
+
+            <div className="mt-6 rounded-xl border border-border p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-foreground">Focus Score</h3>
+                {performanceTier && (
+                  <Badge variant="outline" className={performanceTier.color}>
+                    {performanceTier.label}
+                  </Badge>
+                )}
+              </div>
+              {isLoadingFocusScore ? (
+                <p className="mt-3 text-sm text-muted-foreground">Loading performance data...</p>
+              ) : focusScore ? (
+                <div className="mt-3 grid sm:grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-lg border border-border px-3 py-2">
+                    <p className="text-xs text-muted-foreground">Score</p>
+                    <p className="text-xl font-bold text-foreground">{focusScore.score}</p>
+                  </div>
+                  <div className="rounded-lg border border-border px-3 py-2">
+                    <p className="text-xs text-muted-foreground">Confidence</p>
+                    <p className="text-xl font-bold text-foreground">{focusScore.confidence}%</p>
+                  </div>
+                  <div className="rounded-lg border border-border px-3 py-2">
+                    <p className="text-xs text-muted-foreground">Status</p>
+                    <p className="font-semibold text-foreground">{performanceTier?.label ?? 'Unrated'}</p>
+                  </div>
+                  <div className="rounded-lg border border-border px-3 py-2">
+                    <p className="text-xs text-muted-foreground">Valid for</p>
+                    <p className={`font-semibold ${isExpired ? 'text-red-400' : 'text-foreground'}`}>{remainingValidity ?? '--'}</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-muted-foreground">No performance data available</p>
+              )}
+              {focusScore && focusScore.confidence > 70 && (
+                <Badge variant="secondary" className="mt-3">AI Performance Verified</Badge>
+              )}
+              {!hasValidPerformanceData && (
+                <p className="mt-3 text-sm text-amber-500">Session expired due to outdated performance data</p>
+              )}
             </div>
 
             {(token.title || token.description || token.topics?.length || token.expertiseTags?.length) && (
@@ -544,7 +694,9 @@ const MarketplaceTokenDetails = () => {
                     <>
                       <p className="text-sm text-muted-foreground">
                         {token.state === 'listed'
-                          ? 'Ready to purchase this session token.'
+                          ? hasValidPerformanceData
+                            ? 'Ready to purchase this session token.'
+                            : 'Purchase disabled until fresh performance data is available.'
                           : 'This session token is no longer available for purchase.'}
                       </p>
                       <ErrorNotice title="Purchase failed" message={purchaseError} />

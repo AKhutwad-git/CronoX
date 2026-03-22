@@ -415,8 +415,95 @@ export const revokeBiometricConsent = async (req: AuthenticatedRequest, res: Res
   }
 };
 
+export const getFocusScoreEndpoint = async (req: AuthenticatedRequest, res: Response) => {
+  const requesterUserId = req.user?.userId;
+  if (!requesterUserId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+
+  const queryUserId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+  const targetUserId = queryUserId ?? requesterUserId;
+
+  try {
+    const { getLatestFocusScore, getLatestValidFocusScore, getFocusScoreTrend } = await import('./focus-score.service');
+
+    if (queryUserId) {
+      const latestValid = await getLatestValidFocusScore(targetUserId);
+      if (!latestValid) {
+        return res.status(404).json({ message: 'No valid performance data available' });
+      }
+      return res.json({
+        score: latestValid.score,
+        confidence: latestValid.confidence,
+        validUntil: latestValid.validUntil
+      });
+    }
+
+    const [latest, trend] = await Promise.all([
+      getLatestFocusScore(targetUserId),
+      getFocusScoreTrend(targetUserId, 24)
+    ]);
+
+    res.json({
+      focusScore: latest,
+      trend
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ message: 'Error fetching focus score', error: message });
+  }
+};
+
+export const triggerFocusScoreComputation = async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+
+  try {
+    const { calculateAndStoreFocusScore } = await import('./focus-score.service');
+    const result = await calculateAndStoreFocusScore(userId);
+
+    await auditLogRepository.create({
+      entityType: 'FocusScore',
+      entityId: userId,
+      eventType: 'FocusScoreComputed',
+      metadata: {
+        userId,
+        score: result.score,
+        confidence: result.confidence,
+        modelVersion: result.modelVersion
+      } as Prisma.InputJsonValue
+    });
+
+    res.json({ focusScore: result });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ message: 'Error computing focus score', error: message });
+  }
+};
+
+export const getMetrics = async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+
+  try {
+    const metrics = await prisma.metric.findMany({
+      where: { userId },
+      orderBy: { recordedAt: 'asc' }
+    });
+    res.json(metrics);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ message: 'Error fetching metrics', error: message });
+  }
+};
+
 export const getMetricsByUserId = async (userId: string) => {
   return prisma.metric.findMany({
-    where: { userId }
+    where: { userId },
+    orderBy: { recordedAt: 'asc' }
   });
 };

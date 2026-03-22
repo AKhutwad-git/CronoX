@@ -256,6 +256,17 @@ export class BookingRepository extends BaseRepository<
       throw new Error('Professional does not match time token owner');
     }
 
+    const validFocusScore = await prisma.focusScore.findFirst({
+      where: {
+        userId: timeToken.professional.userId,
+        validUntil: { gt: new Date() }
+      },
+      orderBy: { computedAt: 'desc' }
+    });
+    if (!validFocusScore) {
+      throw new Error('Session expired due to outdated performance data');
+    }
+
     const buyer = await prisma.user.findUnique({
       where: { id: data.buyerId }
     });
@@ -319,6 +330,17 @@ export class BookingRepository extends BaseRepository<
 
       if (timeToken.professionalId !== data.professionalId) {
         throw new Error('Professional does not match time token owner');
+      }
+
+      const validFocusScore = await tx.focusScore.findFirst({
+        where: {
+          userId: timeToken.professional.userId,
+          validUntil: { gt: new Date() }
+        },
+        orderBy: { computedAt: 'desc' }
+      });
+      if (!validFocusScore) {
+        throw new Error('Session expired due to outdated performance data');
       }
 
       const buyer = await tx.user.findUnique({

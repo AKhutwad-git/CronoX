@@ -109,12 +109,6 @@ export const apiRequest = async <TResponse>(path: string, init?: ApiRequestInit)
     headers,
   };
 
-  console.log("[api] request", {
-    url: resolvedUrl,
-    method: requestInit.method ?? "GET",
-    hasBody: Boolean(requestInit.body),
-  });
-
   const response = await fetch(resolvedUrl, requestInit);
   const data = await parseResponse(response);
 
@@ -150,11 +144,6 @@ export const apiRequest = async <TResponse>(path: string, init?: ApiRequestInit)
 
     throw error;
   }
-
-  console.log("[api] request successful", {
-    url: resolvedUrl,
-    status: response.status,
-  });
 
   return data as TResponse;
 };
@@ -255,4 +244,38 @@ export const grantBiometricConsent = async (payload: { metricType: string; sourc
 export const revokeBiometricConsent = async (consentId: string) =>
   apiRequest(`/biometrics/consents/${consentId}/revoke`, {
     method: "POST",
+  });
+
+export const getFocusScore = async () =>
+  apiRequest(`/metrics/focus-score`, {});
+
+export type FocusScoreByUserResponse = {
+  score: number;
+  confidence: number;
+  validUntil: string;
+};
+
+export const getFocusScoreByUser = async (userId: string) =>
+  apiRequest<FocusScoreByUserResponse>(`/metrics/focus-score?userId=${encodeURIComponent(userId)}`, {});
+
+export const computeFocusScore = async () =>
+  apiRequest(`/metrics/focus-score/compute`, {
+    method: "POST",
+  });
+
+export const getMetrics = async () =>
+  apiRequest<unknown[]>(`/metrics`, {});
+
+export type PricingResponse = {
+  price: number;
+  focusScore: number;
+  baseRate: number;
+  multiplier: number;
+  volatilityPenalty: number;
+};
+
+export const calculatePricing = async (professionalId: string) =>
+  apiRequest<PricingResponse>(`/pricing/calculate`, {
+    method: "POST",
+    body: JSON.stringify({ professionalId }),
   });

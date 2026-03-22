@@ -1,7 +1,17 @@
 import { Request, Response } from 'express';
 import { stripe, STRIPE_WEBHOOK_SECRET } from './stripe.service';
 import { logger } from '../../lib/logger';
-import { processSettlement } from './payment.controller';
+import prisma from '../../lib/prisma';
+
+const isIdempotentError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : '';
+  return (
+    message.includes('Unique constraint failed') ||
+    message.includes('not available for purchase') ||
+    message.includes('already exists') ||
+    message.includes('Booking already exists')
+  );
+};
 
 export const handleStripeWebhook = async (req: Request, res: Response) => {
   const sig = req.headers['stripe-signature'];
@@ -32,7 +42,9 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         
         if (tokenId && buyerId) {
           const { MarketplaceOrderRepository } = await import('../marketplace/marketplace-order.repository');
+          const { SessionRepository } = await import('../scheduling/session.repository');
           const orderRepo = new MarketplaceOrderRepository();
+          const sessionRepo = new SessionRepository();
           
           try {
             await orderRepo.createWithValidation({
@@ -42,8 +54,76 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
               currency: paymentIntent.currency.toUpperCase()
             });
             logger.info(`Token purchase fulfilled for token ${tokenId} by buyer ${buyerId}`);
-          } catch (fulfillError) {
-             logger.error(`Error fulfilling token purchase for ${tokenId}`, fulfillError);
+          } catch (fulfillError: unknown) {
+            if (!isIdempotentError(fulfillError)) {
+              throw fulfillError;
+            }
+            logger.info(`Token purchase already fulfilled for token ${tokenId}`);
+          }
+
+          const existingBooking = await prisma.booking.findUnique({
+            where: { tokenId },
+            include: { session: true }
+          });
+          if (existingBooking?.session) {
+            logger.info(`Booking and session already exist for token ${tokenId}`);
+            break;
+          }
+
+          if (!existingBooking) {
+            const token = await prisma.timeToken.findUnique({
+              where: { id: tokenId },
+              include: { professional: true }
+            });
+            if (!token || token.state !== 'purchased' || token.ownerId !== buyerId) {
+              throw new Error(`Unable to create booking for token ${tokenId}: purchase state not finalized`);
+            }
+
+            const scheduledAt = new Date(Date.now() + 10 * 60 * 1000);
+            const booking = await prisma.booking.create({
+              data: {
+                tokenId,
+                buyerId,
+                scheduledAt,
+                status: 'scheduled'
+              }
+            });
+            logger.info(`Booking created for token ${tokenId}`);
+
+            const endTime = new Date(scheduledAt.getTime() + token.durationMinutes * 60000);
+            try {
+              await sessionRepo.createWithValidation({
+                bookingId: booking.id,
+                professionalId: token.professionalId,
+                startTime: scheduledAt,
+                endTime,
+                status: 'pending'
+              });
+              logger.info(`Session created for booking ${booking.id} on token ${tokenId}`);
+            } catch (sessionError: unknown) {
+              logger.warn(`Session auto-creation failed for booking ${booking.id}`, sessionError);
+            }
+          } else if (!existingBooking.session) {
+            const token = await prisma.timeToken.findUnique({
+              where: { id: tokenId }
+            });
+            if (!token) {
+              throw new Error(`Unable to create session for token ${tokenId}: token missing`);
+            }
+            const startTime = existingBooking.scheduledAt;
+            const endTime = new Date(startTime.getTime() + token.durationMinutes * 60000);
+            try {
+              await sessionRepo.createWithValidation({
+                bookingId: existingBooking.id,
+                professionalId: token.professionalId,
+                startTime,
+                endTime,
+                status: 'pending'
+              });
+              logger.info(`Session created for existing booking on token ${tokenId}`);
+            } catch (sessionError: unknown) {
+              logger.warn(`Session auto-creation failed for existing booking ${existingBooking.id}`, sessionError);
+            }
           }
         } else {
           logger.warn(`PaymentIntent successful but missing tokenId/buyerId in metadata: ${paymentIntent.id}`);

@@ -6,14 +6,22 @@ import {
   createDeviceBiometric,
   listBiometricConsents,
   grantBiometricConsent,
-  revokeBiometricConsent
+  revokeBiometricConsent,
+  getFocusScoreEndpoint,
+  triggerFocusScoreComputation,
+  getMetrics
 } from './metrics.controller';
 import { authenticate } from '../../middleware/auth.middleware';
+import { authorize } from '../../middleware/role.middleware';
 
 const metricsRouter = Router();
 const biometricsRouter = Router();
 
 metricsRouter.post('/', authenticate, createMetric);
+metricsRouter.get('/', authenticate, getMetrics);
+metricsRouter.get('/focus-score', authenticate, getFocusScoreEndpoint);
+metricsRouter.post('/focus-score/compute', authenticate, authorize(['bio_engine', 'admin', 'professional']), triggerFocusScoreComputation);
+
 biometricsRouter.post('/upload', authenticate, createBiometricUpload);
 biometricsRouter.post('/batch', authenticate, createBiometricBatch);
 biometricsRouter.post('/device', authenticate, createDeviceBiometric);
@@ -23,3 +31,4 @@ biometricsRouter.post('/consents/:id/revoke', authenticate, revokeBiometricConse
 
 export { biometricsRouter };
 export default metricsRouter;
+

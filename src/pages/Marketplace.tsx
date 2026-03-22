@@ -15,6 +15,7 @@ import { apiRequest } from '@/lib/api';
 type ListedToken = {
   id: string;
   state: string;
+  professionalId: string;
   durationMinutes: number;
   price: number;
   title?: string;
@@ -23,8 +24,14 @@ type ListedToken = {
   professional?: {
     verificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
     user?: {
+      id?: string;
       email?: string;
       role?: string;
+      focusScores?: Array<{
+        score: number | string;
+        confidence: number | string | null;
+        validUntil: string;
+      }>;
     };
   };
 };
@@ -181,7 +188,6 @@ const Marketplace = () => {
   };
 
   const handleViewDetails = (tokenId?: string) => {
-    console.log('[marketplace] view details click', { tokenId });
     if (!tokenId) {
       toast({
         title: 'Session unavailable',
@@ -191,8 +197,14 @@ const Marketplace = () => {
       return;
     }
     const target = `/marketplace/tokens/${tokenId}`;
-    console.log('[marketplace] navigate to details', { target });
     navigate(target);
+  };
+
+  const getPerformanceTier = (score: number) => {
+    if (score >= 80) return 'Premium';
+    if (score >= 60) return 'Good';
+    if (score >= 40) return 'Average';
+    return 'Low';
   };
 
   const totalPages = Math.max(1, Math.ceil(pagination.totalCount / pagination.pageSize));
@@ -314,17 +326,32 @@ const Marketplace = () => {
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
                   {tokens.map((token, index) => (
                     <motion.div key={token.id || index} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
+                      {(() => {
+                        const latestFocus = token.professional?.user?.focusScores?.[0];
+                        const parsedScore = latestFocus ? Number(latestFocus.score) : null;
+                        const parsedConfidence = latestFocus?.confidence !== null && latestFocus?.confidence !== undefined
+                          ? Number(latestFocus.confidence)
+                          : null;
+                        const hasValidFocus = typeof parsedScore === 'number' && Number.isFinite(parsedScore) && Boolean(latestFocus?.validUntil);
+                        return (
                       <SessionCard
                         professionalName={token.professional?.user?.email || 'Professional'}
                         role={token.professional?.user?.role || 'Professional'}
                         verificationStatus={token.professional?.verificationStatus}
                         duration={token.durationMinutes}
                         price={Number(token.price)}
-                        status={getStatus(token.state)}
+                        status={token.state === 'listed' && !hasValidFocus ? 'pending' : getStatus(token.state)}
                         title={token.title}
                         tags={token.topics?.length ? token.topics : token.expertiseTags}
+                        focusScore={hasValidFocus ? parsedScore : null}
+                        focusConfidence={hasValidFocus ? parsedConfidence : null}
+                        focusValidUntil={hasValidFocus ? latestFocus?.validUntil : null}
+                        performanceTier={hasValidFocus ? getPerformanceTier(parsedScore as number) : null}
+                        showPerformanceVerified={hasValidFocus && (parsedConfidence ?? 0) > 70}
                         onAction={() => handleViewDetails(token.id)}
                       />
+                        );
+                      })()}
                     </motion.div>
                   ))}
                 </div>

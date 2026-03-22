@@ -198,6 +198,16 @@ export const purchaseTimeToken: RequestHandler = async (req, res: Response) => {
       return res.status(400).json({ message: 'This token is not available for purchase.' });
     }
 
+    const tokenWithProfessional = await timeTokenRepository.findByIdWithProfessional(id as string);
+    if (!tokenWithProfessional) {
+      return res.status(404).json({ message: 'TimeToken not found' });
+    }
+    const { getLatestValidFocusScore } = await import('../metrics/focus-score.service');
+    const validScore = await getLatestValidFocusScore(tokenWithProfessional.professional.userId);
+    if (!validScore) {
+      return res.status(400).json({ message: 'Session expired due to outdated performance data' });
+    }
+
     const buyerId = user?.userId;
     if (!buyerId) return res.status(401).json({ message: 'Unauthorized' });
 
@@ -341,6 +351,18 @@ export const getTimeTokenById: RequestHandler = async (req, res: Response) => {
     if (!token) {
       return res.status(404).json({ message: 'TimeToken not found' });
     }
+
+    // Bio-Temporal Hard Filter: For listed tokens, check if professional is in the zone
+    if (token.state === 'listed') {
+      const { getLatestValidFocusScore } = await import('../metrics/focus-score.service');
+      const validScore = await getLatestValidFocusScore(token.professional.userId);
+      if (!validScore) {
+        return res.status(404).json({ 
+          message: 'This session has expired bio-temporally. Waiting for professional to re-sync.' 
+        });
+      }
+    }
+
     res.json(token);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';

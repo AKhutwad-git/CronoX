@@ -16,12 +16,11 @@ const router = Router();
 
 router.get('/', authenticate, getUsers);
 router.post('/', authenticate, createUser);
-router.get('/:id', authenticate, getUserById);
-
 router.get('/professionals', getProfessionals);
 router.get('/professionals/me', authenticate, authorize(['professional']), getProfessionalMe);
 router.patch('/professionals/me', authenticate, authorize(['professional']), updateProfessionalProfile);
 router.patch('/professionals/:id/verification', authenticate, authorize(['admin']), updateProfessionalVerification);
 router.get('/professionals/:id', getProfessionalById);
+router.get('/:id', authenticate, getUserById);
 
 export default router;

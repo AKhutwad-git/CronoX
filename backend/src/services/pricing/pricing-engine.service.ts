@@ -1,30 +1,63 @@
 import prisma from '../../lib/prisma';
-import { calculateAndStoreFocusScore } from '../metrics/focus-score.service';
 
 /**
- * Compute Adjusted Rate based on Focus Score
- * Linear multiplier: 0.5x to 1.5x based on score 0-100
+ * Pricing Engine v2.0
+ *
+ * Computes adjusted rate using:
+ *   priceMultiplier = 1 + (focusScore / 150)
+ *   volatilityPenalty = 1 - (stdDev / 50)
+ *   adjustedRate = baseRate * priceMultiplier * volatilityPenalty
  */
-export function computeAdjustedRate(baseRate: number, focusScore: number): number {
-  let multiplier: number;
 
-  if (focusScore >= 0 && focusScore <= 50) {
-    // From 0 (0.5x) to 50 (1.0x)
-    // Multiplier increases by 0.5 over 50 points
-    multiplier = 0.5 + (focusScore / 50) * 0.5;
-  } else if (focusScore > 50 && focusScore <= 100) {
-    // From 50 (1.0x) to 100 (2.0x)
-    // Multiplier increases by 1.0 over 50 points
-    multiplier = 1.0 + ((focusScore - 50) / 50) * 1.0;
-  } else {
-    if (focusScore < 0) multiplier = 0.5;
-    else multiplier = 2.0;
-  }
-
-  return Math.round(baseRate * multiplier * 100) / 100; // Round to 2 decimal places
+/**
+ * Compute the price multiplier from a focus score.
+ * Range: ~1.0x (score=0) to ~1.67x (score=100)
+ */
+export function computePriceMultiplier(focusScore: number): number {
+  return 1 + (focusScore / 150);
 }
 
-export async function getRecommendedPricing(professionalUserId: string): Promise<{ baseRate: number; focusScore: number; recommendedRate: number }> {
+/**
+ * Compute a volatility penalty based on score consistency.
+ * Consistent performance → penalty near 1.0 (no penalty).
+ * Erratic performance → penalty drops toward 0.0.
+ */
+export function computeVolatilityPenalty(scores: number[]): number {
+  if (scores.length < 2) return 1.0; // no penalty with insufficient data
+
+  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const variance = scores.reduce((sum, s) => sum + (s - mean) ** 2, 0) / scores.length;
+  const stdDev = Math.sqrt(variance);
+
+  // Clamp penalty between 0.5 and 1.0
+  return Math.max(0.5, Math.min(1.0, 1 - (stdDev / 50)));
+}
+
+/**
+ * Compute the final adjusted rate.
+ */
+export function computeAdjustedRate(
+  baseRate: number,
+  focusScore: number,
+  recentScores: number[] = []
+): number {
+  const multiplier = computePriceMultiplier(focusScore);
+  const volatilityPenalty = computeVolatilityPenalty(recentScores);
+  const adjusted = baseRate * multiplier * volatilityPenalty;
+  return Math.round(adjusted * 100) / 100;
+}
+
+/**
+ * Full pricing pipeline: fetch professional, compute focus-score-based pricing.
+ */
+export async function getRecommendedPricing(professionalUserId: string): Promise<{
+  baseRate: number;
+  focusScore: number;
+  recommendedRate: number;
+  multiplier: number;
+  volatilityPenalty: number;
+  isValid: boolean;
+}> {
   const professional = await prisma.professional.findUnique({
     where: { userId: professionalUserId }
   });
@@ -33,34 +66,71 @@ export async function getRecommendedPricing(professionalUserId: string): Promise
     throw new Error('Professional not found');
   }
 
-  let latestScore = await prisma.focusScore.findFirst({
-    where: { userId: professionalUserId },
-    orderBy: { computedAt: 'desc' }
-  });
+  const baseRate = Number(professional.baseRate);
+
+  // Get latest VALID focus score (within 1 hour)
+  const { getLatestValidFocusScore, calculateAndStoreFocusScore } = await import('../metrics/focus-score.service');
+  const latestScore = await getLatestValidFocusScore(professionalUserId);
 
   let scoreValue = 0;
-  
+  let isValid = false;
+
   if (!latestScore) {
-    // Attempt to compute if none exists
-    scoreValue = await calculateAndStoreFocusScore(professionalUserId);
-  } else {
-    // If it's older than 24h, we could recompute, but let's stick to using the latest stored or calculating fresh
-    const oneDayAgo = new Date();
-    oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-    
-    if (latestScore.computedAt < oneDayAgo) {
-      scoreValue = await calculateAndStoreFocusScore(professionalUserId);
-    } else {
-      scoreValue = Number(latestScore.score);
+    // Attempt one fresh compute if no valid score exists
+    try {
+      const freshScore = await calculateAndStoreFocusScore(professionalUserId);
+      // Check if the fresh computation actually resulted in a valid score (confidence > 0)
+      if (freshScore.confidence > 0) {
+        scoreValue = freshScore.score;
+        isValid = true;
+      }
+    } catch {
+      // No recent data to compute a valid score
+      scoreValue = 0;
+      isValid = false;
     }
+  } else {
+    scoreValue = Number(latestScore.score);
+    isValid = true;
   }
 
-  const baseRate = Number(professional.baseRate);
-  const recommendedRate = computeAdjustedRate(baseRate, scoreValue);
+  // Bio-Temporal Rule: If no valid score exists after attempt, return zero/invalid
+  if (!isValid) {
+    return {
+      baseRate,
+      focusScore: 0,
+      recommendedRate: baseRate,
+      multiplier: 1.0,
+      volatilityPenalty: 1.0,
+      isValid: false // Flag to disable listings
+    };
+  }
+
+  // Get recent scores for volatility calculation
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+  const recentScores = await prisma.focusScore.findMany({
+    where: {
+      userId: professionalUserId,
+      computedAt: { gte: sevenDaysAgo }
+    },
+    orderBy: { computedAt: 'desc' },
+    take: 20,
+    select: { score: true }
+  });
+
+  const scoreHistory = recentScores.map(s => Number(s.score));
+  const multiplier = computePriceMultiplier(scoreValue);
+  const volatilityPenalty = computeVolatilityPenalty(scoreHistory);
+  const recommendedRate = computeAdjustedRate(baseRate, scoreValue, scoreHistory);
 
   return {
     baseRate,
     focusScore: scoreValue,
-    recommendedRate
+    recommendedRate,
+    multiplier,
+    volatilityPenalty,
+    isValid: true
   };
 }

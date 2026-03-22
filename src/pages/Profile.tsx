@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
@@ -17,9 +17,27 @@ import {
   updateProfessionalProfile,
   getBiometricConsents,
   grantBiometricConsent,
-  revokeBiometricConsent
+  revokeBiometricConsent,
+  getFocusScore,
+  computeFocusScore,
+  getMetrics
 } from '@/lib/api';
-import { Mail, Briefcase, CheckCircle, AlertCircle } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar
+} from 'recharts';
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart';
+import { Mail, Briefcase, CheckCircle, AlertCircle, Brain, Heart, Moon, Activity, TrendingUp, Zap } from 'lucide-react';
 
 type ProfessionalProfile = {
   id: string;
@@ -47,6 +65,37 @@ type BiometricConsent = {
   revokedAt?: string | null;
 };
 
+type FocusScoreBreakdown = {
+  hrvScore: number | null;
+  heartRateStability: number | null;
+  sleepRecovery: number | null;
+  activityBalance: number | null;
+  behavioralFocus: number | null;
+};
+
+type FocusScoreData = {
+  score: number;
+  confidence: number;
+  breakdown: FocusScoreBreakdown;
+  modelVersion: string;
+  contributingFactors: string[];
+  validFrom: string;
+  validUntil: string;
+};
+
+type TrendPoint = {
+  score: number;
+  computedAt: string;
+};
+
+type Metric = {
+  id: string;
+  metricType: string;
+  value: number | string;
+  recordedAt: string;
+  sourceDevice?: string | null;
+};
+
 const Profile = () => {
   const { role, token } = useRole();
   const { toast } = useToast();
@@ -70,6 +119,16 @@ const Profile = () => {
   const [isLoadingConsents, setIsLoadingConsents] = useState(false);
   const [isGrantingConsent, setIsGrantingConsent] = useState(false);
   const [revokingConsentId, setRevokingConsentId] = useState<string | null>(null);
+  const [focusScoreData, setFocusScoreData] = useState<FocusScoreData | null>(null);
+  const [focusTrend, setFocusTrend] = useState<TrendPoint[]>([]);
+  const [isComputingScore, setIsComputingScore] = useState(false);
+
+  const chartConfig = {
+    value: {
+      label: "Value",
+      color: "hsl(var(--primary))",
+    },
+  } satisfies ChartConfig;
 
   const devicePayloadExample = `{
   "deviceId": "ble-001",
@@ -80,9 +139,69 @@ const Profile = () => {
   "value": 72
 }`;
 
-  const profileStorageKey = 'cronox.profile';
+  const userId = useMemo(() => {
+    if (!token) {
+      return null;
+    }
+    const parts = token.split('.');
+    if (parts.length < 2) {
+      return null;
+    }
+    try {
+      const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const paddedPayload =
+        payloadBase64.length % 4 === 0 ? payloadBase64 : payloadBase64.padEnd(payloadBase64.length + (4 - (payloadBase64.length % 4)), '=');
+      const payload = JSON.parse(atob(paddedPayload)) as { userId?: string; sub?: string; id?: string };
+      return payload.userId ?? payload.sub ?? payload.id ?? null;
+    } catch {
+      return null;
+    }
+  }, [token]);
 
-  const readLocalProfile = () => {
+  const profileStorageKey = useMemo(
+    () => (userId ? `cronox.profile.${userId}` : 'cronox.profile.anonymous'),
+    [userId],
+  );
+
+  const { data: metrics = [], isLoading: isLoadingMetrics } = useQuery({
+    queryKey: ['metrics', userId],
+    queryFn: async () => {
+      const response = await getMetrics();
+      return Array.isArray(response) ? (response as Metric[]) : [];
+    },
+    enabled: Boolean(token && userId),
+    refetchInterval: 30000,
+  });
+
+  const {
+    data: focusScoreResponse,
+    isLoading: isLoadingFocusScore,
+    refetch: refetchFocusScore,
+  } = useQuery({
+    queryKey: ['focusScore', userId],
+    queryFn: async () => {
+      const response = await getFocusScore();
+      return response as { focusScore: FocusScoreData | null; trend: TrendPoint[] };
+    },
+    enabled: Boolean(token && userId),
+    refetchInterval: 30000,
+  });
+
+  const {
+    data: professionalProfile,
+    isLoading: isLoadingProfile,
+    error: profileLoadError,
+  } = useQuery({
+    queryKey: ['profile', userId],
+    queryFn: async () => {
+      const response = await getProfessionalMe();
+      return response as ProfessionalProfile;
+    },
+    enabled: role === 'professional' && Boolean(token && userId),
+    refetchInterval: 30000,
+  });
+
+  const readLocalProfile = useCallback(() => {
     if (typeof localStorage === 'undefined') {
       return { fullName: '', bio: '', availabilitySummary: '' };
     }
@@ -104,9 +223,9 @@ const Profile = () => {
     } catch {
       return { fullName: '', bio: '', availabilitySummary: '' };
     }
-  };
+  }, [profileStorageKey]);
 
-  const writeLocalProfile = (data: { fullName: string; bio: string; availabilitySummary: string }) => {
+  const writeLocalProfile = useCallback((data: { fullName: string; bio: string; availabilitySummary: string }) => {
     if (typeof localStorage === 'undefined') {
       return;
     }
@@ -115,55 +234,44 @@ const Profile = () => {
     } catch {
       return;
     }
-  };
+  }, [profileStorageKey]);
 
   useEffect(() => {
     const localProfile = readLocalProfile();
     setFullName(localProfile.fullName);
     setBio(localProfile.bio);
     setAvailabilitySummary(localProfile.availabilitySummary);
-  }, []);
+  }, [readLocalProfile]);
 
   useEffect(() => {
     if (role !== 'professional') {
       setProfessional(null);
+      setIsLoading(false);
       return;
     }
-    let isMounted = true;
-    const loadProfile = async () => {
-      try {
-        setIsLoading(true);
-        const data = await getProfessionalMe();
-        if (!isMounted) {
-          return;
-        }
-        const profile = data as ProfessionalProfile;
-        setProfessional(profile);
-        setSkillsInput((profile.skills ?? []).join(', '));
-        setCertificationsInput((profile.certifications ?? []).join(', '));
-      } catch (error: unknown) {
-        if (!isMounted) {
-          return;
-        }
-        const message = error instanceof Error ? error.message : 'Unable to load profile.';
-        toast({
-          title: 'Unable to load profile',
-          description: message,
-          variant: 'destructive',
-        });
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    };
+    setIsLoading(isLoadingProfile);
+  }, [role, isLoadingProfile]);
 
-    loadProfile();
+  useEffect(() => {
+    if (!professionalProfile) {
+      return;
+    }
+    setProfessional(professionalProfile);
+    setSkillsInput((professionalProfile.skills ?? []).join(', '));
+    setCertificationsInput((professionalProfile.certifications ?? []).join(', '));
+  }, [professionalProfile]);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [role, toast]);
+  useEffect(() => {
+    if (!profileLoadError) {
+      return;
+    }
+    const message = profileLoadError instanceof Error ? profileLoadError.message : 'Unable to load profile.';
+    toast({
+      title: 'Unable to load profile',
+      description: message,
+      variant: 'destructive',
+    });
+  }, [profileLoadError, toast]);
 
   const loadConsents = useCallback(async () => {
     if (!token) {
@@ -194,6 +302,122 @@ const Profile = () => {
     }
     void loadConsents();
   }, [token, loadConsents]);
+
+  useEffect(() => {
+    if (!token) {
+      setFocusScoreData(null);
+      setFocusTrend([]);
+      return;
+    }
+    if (!focusScoreResponse) {
+      return;
+    }
+    setFocusScoreData(focusScoreResponse.focusScore ?? null);
+    setFocusTrend(focusScoreResponse.trend ?? []);
+  }, [token, focusScoreResponse]);
+
+  const handleComputeScore = async () => {
+    if (!token || isComputingScore) return;
+    try {
+      setIsComputingScore(true);
+      const response = await computeFocusScore() as { focusScore: FocusScoreData };
+      setFocusScoreData(response.focusScore ?? null);
+      toast({ title: 'Focus Score computed', description: `Score: ${response.focusScore?.score ?? 'N/A'}` });
+      await refetchFocusScore();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unable to compute score.';
+      toast({ title: 'Computation failed', description: message, variant: 'destructive' });
+    } finally {
+      setIsComputingScore(false);
+    }
+  };
+
+  // Helper functions for UI
+  const getScoreColor = (score: number) => {
+    if (score >= 80) return 'text-emerald-400';
+    if (score >= 60) return 'text-blue-400';
+    if (score >= 40) return 'text-amber-400';
+    return 'text-red-400';
+  };
+
+  const getScoreGradient = (score: number) => {
+    if (score >= 80) return 'from-emerald-500/20 to-emerald-500/5';
+    if (score >= 60) return 'from-blue-500/20 to-blue-500/5';
+    if (score >= 40) return 'from-amber-500/20 to-amber-500/5';
+    return 'from-red-500/20 to-red-500/5';
+  };
+
+  const getHrvStatus = (hrvScore: number | null) => {
+    if (hrvScore === null) return { label: 'No data', color: 'text-muted-foreground' };
+    if (hrvScore >= 70) return { label: 'Optimal', color: 'text-emerald-400' };
+    if (hrvScore >= 40) return { label: 'Moderate', color: 'text-amber-400' };
+    return { label: 'Low', color: 'text-red-400' };
+  };
+
+  const getPriceBoost = (score: number) => {
+    const multiplier = 1 + score / 150;
+    return Math.round((multiplier - 1) * 100);
+  };
+
+  const [countdown, setCountdown] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!focusScoreData?.validUntil) {
+      setCountdown(null);
+      return;
+    }
+    const timer = setInterval(() => {
+      const expiry = new Date(focusScoreData.validUntil).getTime();
+      const now = new Date().getTime();
+      const diff = expiry - now;
+      if (diff <= 0) {
+        setCountdown('Expired');
+        return;
+      }
+      const mins = Math.floor(diff / 60000);
+      const secs = Math.floor((diff % 60000) / 1000);
+      setCountdown(`${mins}m ${secs}s`);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [focusScoreData?.validUntil]);
+
+  const normalizedMetrics = useMemo(
+    () =>
+      metrics
+        .map((metric) => ({
+          id: metric.id,
+          metricType: metric.metricType,
+          recordedAt: metric.recordedAt,
+          value: Number(metric.value),
+          sourceDevice: metric.sourceDevice ?? null,
+        }))
+        .filter((metric) => Number.isFinite(metric.value) && !Number.isNaN(new Date(metric.recordedAt).getTime())),
+    [metrics],
+  );
+
+  const vitalsChartData = useMemo(
+    () =>
+      normalizedMetrics
+        .filter((metric) => ['hrv', 'heart_rate'].includes(metric.metricType))
+        .map((metric) => ({
+          recordedAt: metric.recordedAt,
+          value: metric.value,
+        })),
+    [normalizedMetrics],
+  );
+
+  const activityChartData = useMemo(
+    () =>
+      normalizedMetrics
+        .filter((metric) => ['steps', 'sleep_duration'].includes(metric.metricType))
+        .map((metric) => ({
+          recordedAt: metric.recordedAt,
+          value: metric.value,
+        })),
+    [normalizedMetrics],
+  );
+
+  const hasMetricsHistory = normalizedMetrics.length > 0;
 
   const parsedSkills = skillsInput
     .split(',')
@@ -545,10 +769,11 @@ const Profile = () => {
       <main className="section-container py-8 lg:py-12 max-w-3xl">
         <motion.div className="mb-8" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="font-display text-3xl font-bold text-foreground mb-2">Profile</h1>
-          <p className="text-muted-foreground">Manage your account details and preferences.</p>
+          <p className="text-muted-foreground">Manage your account details, biometric insights, and performance.</p>
         </motion.div>
 
-        <motion.div className="card-elevated p-6 mb-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+        {/* ──── PROFILE INFO (NOW AT TOP) ──── */}
+        <motion.div className="card-elevated p-6 mb-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
           <div className="flex items-center gap-4 mb-6">
             <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary to-cronox-secondary flex items-center justify-center text-primary-foreground text-2xl font-bold">U</div>
             <div>
@@ -610,6 +835,152 @@ const Profile = () => {
             </div>
           </div>
         </motion.div>
+
+        {/* ──── FOCUS SCORE CARD ──── */}
+        {token && (
+          <motion.div
+            className={`card-elevated p-6 mb-6 bg-gradient-to-br ${focusScoreData ? getScoreGradient(focusScoreData.score) : 'from-muted/30 to-muted/10'}`}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.05 }}
+          >
+            <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center gap-2">
+                <Brain size={20} className="text-primary" />
+                <h2 className="font-display text-lg font-semibold text-foreground">Focus Score</h2>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs">
+                  {focusScoreData ? `v${focusScoreData.modelVersion}` : 'AI Model'}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleComputeScore}
+                  disabled={isComputingScore}
+                  className="h-7 px-3 text-xs"
+                >
+                  {isComputingScore ? 'Computing...' : 'Refresh'}
+                </Button>
+              </div>
+            </div>
+
+            {isLoadingFocusScore && !focusScoreData ? (
+              <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">Loading focus data...</div>
+            ) : focusScoreData ? (
+              <div className="grid gap-5 md:grid-cols-3">
+                {/* Score gauge */}
+                <div className="flex flex-col items-center justify-center">
+                  <div className="relative w-28 h-28">
+                    <svg className="w-28 h-28 -rotate-90" viewBox="0 0 100 100">
+                      <circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" strokeWidth="6" className="text-muted/30" />
+                      <motion.circle
+                        cx="50" cy="50" r="42" fill="none"
+                        strokeWidth="6" strokeLinecap="round"
+                        className={getScoreColor(focusScoreData.score)}
+                        stroke="currentColor"
+                        strokeDasharray={`${(focusScoreData.score / 100) * 264} 264`}
+                        initial={{ strokeDasharray: '0 264' }}
+                        animate={{ strokeDasharray: `${(focusScoreData.score / 100) * 264} 264` }}
+                        transition={{ duration: 1.2, ease: 'easeOut' }}
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                      <span className={`text-3xl font-bold ${getScoreColor(focusScoreData.score)}`}>
+                        {focusScoreData.score}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">/ 100</span>
+                    </div>
+                  </div>
+                  <span className="text-xs text-muted-foreground mt-2">Live Score</span>
+                </div>
+
+                {/* Trend sparkline */}
+                <div className="flex flex-col justify-center">
+                  <span className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                    <TrendingUp size={12} /> 24h Trend
+                  </span>
+                  {focusTrend.length > 1 ? (
+                    <div className="flex items-end gap-0.5 h-12">
+                      {focusTrend.slice(-20).map((point, i) => (
+                        <div
+                          key={`trend-${i}`}
+                          className={`flex-1 rounded-sm min-w-[3px] transition-all ${getScoreColor(point.score).replace('text-', 'bg-')}`}
+                          style={{ height: `${Math.max(4, (point.score / 100) * 48)}px` }}
+                          title={`Score: ${point.score} at ${new Date(point.computedAt).toLocaleTimeString()}`}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Not enough data yet</span>
+                  )}
+                </div>
+
+                {/* Confidence */}
+                <div className="flex flex-col justify-center items-center">
+                  <span className="text-xs font-medium text-muted-foreground mb-2">Confidence</span>
+                  <div className="text-2xl font-bold text-foreground">{focusScoreData.confidence}%</div>
+                  <div className="mt-1 flex flex-col items-center">
+                    <span className="text-[10px] text-muted-foreground">
+                      {focusScoreData.confidence >= 80 ? 'High signal coverage' :
+                       focusScoreData.confidence >= 60 ? 'Moderate coverage' : 'Limited signals'}
+                    </span>
+                    <Badge variant="outline" className={`mt-2 text-[10px] h-5 ${countdown === 'Expired' ? 'text-red-400 border-red-400' : 'text-primary border-primary'}`}>
+                      {countdown === 'Expired' ? 'Expired' : `Valid for next: ${countdown || '--'}`}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-6">
+                <p className="text-sm text-muted-foreground mb-3">No focus score computed yet.</p>
+                <Button variant="outline" size="sm" onClick={handleComputeScore} disabled={isComputingScore}>
+                  {isComputingScore ? 'Computing...' : 'Compute Focus Score'}
+                </Button>
+              </div>
+            )}
+          </motion.div>
+        )}
+
+
+        {/* ──── TOKEN VALUE IMPACT ──── */}
+        {token && focusScoreData && (
+          <motion.div
+            className="card-elevated p-6 mb-6 border-l-4 border-l-primary/60"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Zap size={18} className="text-amber-400" />
+                <h2 className="font-display text-lg font-semibold text-foreground">Token Value Impact</h2>
+              </div>
+              <Badge variant="secondary" className="text-xs">
+                Live
+              </Badge>
+            </div>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Based on your current focus score, your time is valued at{' '}
+              <span className={`font-bold text-base ${getScoreColor(focusScoreData.score)}`}>
+                +{getPriceBoost(focusScoreData.score)}%
+              </span>{' '}
+              today.
+            </p>
+            <div className="mt-3 h-2 rounded-full bg-muted overflow-hidden">
+              <motion.div
+                className="h-full rounded-full bg-gradient-to-r from-amber-500 to-emerald-500"
+                initial={{ width: 0 }}
+                animate={{ width: `${Math.min(100, getPriceBoost(focusScoreData.score) * 1.5)}%` }}
+                transition={{ duration: 1, delay: 0.3 }}
+              />
+            </div>
+          </motion.div>
+        )}
+
+        <motion.div className="mb-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.12 }}>
+        </motion.div>
+
         {role === 'professional' && (
           <motion.div className="card-elevated p-6 mb-6" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
             <div className="flex items-center justify-between mb-4">
@@ -848,6 +1219,146 @@ const Profile = () => {
         >
           {role === 'professional' ? (isSaving ? 'Saving...' : 'Save Changes') : 'Save Changes'}
         </Button>
+
+        {token && (
+          <div className="space-y-6 mt-12 pt-12 border-t border-border/50">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <h2 className="font-display text-2xl font-bold text-foreground mb-2">Performance Analytics</h2>
+              <p className="text-sm text-muted-foreground mb-6">Real-time biometric signals and historical trends.</p>
+            </motion.div>
+
+            {!hasMetricsHistory ? (
+              <motion.div
+                className="card-elevated p-10 text-center text-muted-foreground"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                {isLoadingMetrics ? 'Loading metrics...' : 'No historical data available.'}
+              </motion.div>
+            ) : (
+              <>
+                <div className="grid gap-6 md:grid-cols-2">
+                  <motion.div
+                    className="card-elevated p-6"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                  >
+                    <div className="flex items-center gap-2 mb-4">
+                      <Heart size={18} className="text-red-400" />
+                      <h3 className="font-display font-semibold">Vitals Trend</h3>
+                    </div>
+                    <div className="h-[250px] w-full">
+                      <ChartContainer config={chartConfig}>
+                        <AreaChart data={vitalsChartData}>
+                          <defs>
+                            <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                              <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--muted)/0.3)" />
+                          <XAxis
+                            dataKey="recordedAt"
+                            tickFormatter={(str) => new Date(str).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            stroke="hsl(var(--muted-foreground))"
+                            fontSize={10}
+                          />
+                          <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} />
+                          <ChartTooltip content={<ChartTooltipContent />} />
+                          <Area
+                            type="monotone"
+                            dataKey="value"
+                            stroke="hsl(var(--primary))"
+                            fillOpacity={1}
+                            fill="url(#colorValue)"
+                            strokeWidth={2}
+                          />
+                        </AreaChart>
+                      </ChartContainer>
+                    </div>
+                  </motion.div>
+
+                  <motion.div
+                    className="card-elevated p-6"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                  >
+                    <div className="flex items-center gap-2 mb-4">
+                      <Activity size={18} className="text-emerald-400" />
+                      <h3 className="font-display font-semibold">Activity & Rest</h3>
+                    </div>
+                    <div className="h-[250px] w-full">
+                      <ChartContainer config={chartConfig}>
+                        <BarChart data={activityChartData}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--muted)/0.3)" />
+                          <XAxis
+                            dataKey="recordedAt"
+                            tickFormatter={(str) => new Date(str).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                            stroke="hsl(var(--muted-foreground))"
+                            fontSize={10}
+                          />
+                          <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} />
+                          <ChartTooltip content={<ChartTooltipContent />} />
+                          <Bar dataKey="value" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ChartContainer>
+                    </div>
+                  </motion.div>
+                </div>
+
+                <motion.div
+                  className="card-elevated overflow-hidden"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                >
+                  <div className="p-6 border-b border-border/50 bg-muted/30">
+                    <h3 className="font-display font-semibold flex items-center gap-2">
+                      <TrendingUp size={18} className="text-blue-400" />
+                      Metrics History
+                    </h3>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-muted/50 text-muted-foreground font-medium border-b border-border/40">
+                        <tr>
+                          <th className="px-6 py-3">Timestamp</th>
+                          <th className="px-6 py-3">Metric</th>
+                          <th className="px-6 py-3">Value</th>
+                          <th className="px-6 py-3">Source</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/30">
+                        {[...normalizedMetrics].reverse().slice(0, 50).map((metric) => (
+                          <tr key={metric.id} className="hover:bg-muted/10 transition-colors">
+                            <td className="px-6 py-3 whitespace-nowrap text-muted-foreground font-mono text-xs">
+                              {new Date(metric.recordedAt).toLocaleString()}
+                            </td>
+                            <td className="px-6 py-3 whitespace-nowrap">
+                              <Badge variant="outline" className="capitalize text-[10px] h-5">
+                                {metric.metricType.replace('_', ' ')}
+                              </Badge>
+                            </td>
+                            <td className="px-6 py-3 whitespace-nowrap font-semibold">{metric.value}</td>
+                            <td className="px-6 py-3 whitespace-nowrap text-xs text-muted-foreground">
+                              {metric.sourceDevice || 'Unknown'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {normalizedMetrics.length > 50 && (
+                    <div className="p-4 bg-muted/20 text-center text-xs text-muted-foreground border-t border-border/30">
+                      Showing latest 50 entries
+                    </div>
+                  )}
+                </motion.div>
+              </>
+            )}
+          </div>
+        )}
       </main>
       <Footer />
     </div>
