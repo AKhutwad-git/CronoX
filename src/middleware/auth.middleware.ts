@@ -28,6 +28,6 @@ export const authenticate = (req: AuthenticatedRequest, res: Response, next: Nex
     next();
   } catch (error) {
     logger.error('Token verification failed', error, { correlationId });
-    res.status(401).json({ message: 'Invalid or expired token' });
+    return res.status(401).json({ message: 'Invalid or expired token' });
   }
 };

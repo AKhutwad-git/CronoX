@@ -6,7 +6,7 @@ export interface CreateBookingData {
   timeTokenId: string;
   buyerId: string;
   professionalId: string;
-  scheduledAt: Date;
+  scheduledAt?: Date;
 }
 
 export class BookingRepository extends BaseRepository<
@@ -25,15 +25,81 @@ export class BookingRepository extends BaseRepository<
   async findByBuyerId(buyerId: string) {
     return prisma.booking.findMany({
       where: { buyerId },
-      include: {
+      select: {
+        id: true,
+        scheduledAt: true,
+        status: true,
         token: {
-          include: {
-            professional: { include: { user: true } }
+          select: {
+            id: true,
+            durationMinutes: true,
+            price: true,
+            professional: {
+              select: {
+                user: {
+                  select: {
+                    email: true
+                  }
+                }
+              }
+            }
           }
         },
-        session: true
+        session: {
+          select: {
+            id: true,
+            status: true,
+            startedAt: true,
+            endedAt: true
+          }
+        }
       }
     });
+  }
+
+  async findByBuyerIdPaginated(buyerId: string, page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const where: Prisma.BookingWhereInput = { buyerId };
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.booking.count({ where }),
+      prisma.booking.findMany({
+        where,
+        select: {
+          id: true,
+          scheduledAt: true,
+          status: true,
+          token: {
+            select: {
+              id: true,
+              durationMinutes: true,
+              price: true,
+              professional: {
+                select: {
+                  user: {
+                    select: {
+                      email: true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          session: {
+            select: {
+              id: true,
+              status: true,
+              startedAt: true,
+              endedAt: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
   }
 
   async findByProfessionalId(professionalId: string) {
@@ -44,12 +110,109 @@ export class BookingRepository extends BaseRepository<
           professionalId: professionalId
         }
       },
-      include: {
-        token: true,
-        buyer: true,
-        session: true
+      select: {
+        id: true,
+        scheduledAt: true,
+        status: true,
+        buyer: {
+          select: {
+            email: true
+          }
+        },
+        token: {
+          select: {
+            id: true,
+            durationMinutes: true,
+            price: true,
+            professional: {
+              select: {
+                user: {
+                  select: {
+                    email: true
+                  }
+                }
+              }
+            }
+          }
+        },
+        session: {
+          select: {
+            id: true,
+            status: true,
+            startedAt: true,
+            endedAt: true
+          }
+        }
       }
     });
+  }
+
+  async findByProfessionalIdPaginated(professionalId: string, page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const where: Prisma.BookingWhereInput = {
+      token: {
+        professionalId: professionalId
+      }
+    };
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.booking.count({ where }),
+      prisma.booking.findMany({
+        where,
+        select: {
+          id: true,
+          scheduledAt: true,
+          status: true,
+          buyer: {
+            select: {
+              email: true
+            }
+          },
+          token: {
+            select: {
+              id: true,
+              durationMinutes: true,
+              price: true,
+              professional: {
+                select: {
+                  user: {
+                    select: {
+                      email: true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          session: {
+            select: {
+              id: true,
+              status: true,
+              startedAt: true,
+              endedAt: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
+  }
+
+  async findAllPaginated(page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.booking.count(),
+      prisma.booking.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
   }
 
   async findByTimeTokenId(timeTokenId: string) {
@@ -64,11 +227,8 @@ export class BookingRepository extends BaseRepository<
   }
 
   private async validateBookingData(data: CreateBookingData) {
-    if (!data.scheduledAt) {
-      throw new Error('scheduledAt is required');
-    }
-
-    if (data.scheduledAt <= new Date()) {
+    // scheduledAt is only required when transitioning to 'scheduled'
+    if (data.scheduledAt && data.scheduledAt <= new Date()) {
       throw new Error('Scheduled time must be in the future');
     }
 
@@ -91,6 +251,18 @@ export class BookingRepository extends BaseRepository<
 
     if (timeToken.professionalId !== data.professionalId) {
       throw new Error('Professional does not match time token owner');
+    }
+
+    // FocusScore is advisory, not blocking
+    const validFocusScore = await prisma.focusScore.findFirst({
+      where: {
+        userId: timeToken.professional.userId,
+        validUntil: { gt: new Date() }
+      },
+      orderBy: { computedAt: 'desc' }
+    });
+    if (!validFocusScore) {
+      console.warn(`[booking] No valid FocusScore for professional ${timeToken.professional.userId}, proceeding anyway`);
     }
 
     const buyer = await prisma.user.findUnique({
@@ -122,15 +294,16 @@ export class BookingRepository extends BaseRepository<
     return this.create({
       token: { connect: { id: data.timeTokenId } },
       buyer: { connect: { id: data.buyerId } },
-      scheduledAt: data.scheduledAt,
-      status: 'scheduled'
+      scheduledAt: data.scheduledAt ?? null,
+      status: data.scheduledAt ? 'scheduled' : 'pending_schedule'
     });
   }
 
   async createWithSession(data: CreateBookingData): Promise<{ booking: Booking; session: Session }> {
     return prisma.$transaction(async (tx) => {
+      // scheduledAt is only required when creating with session
       if (!data.scheduledAt) {
-        throw new Error('scheduledAt is required');
+        throw new Error('scheduledAt is required when creating with session');
       }
 
       if (data.scheduledAt <= new Date()) {
@@ -156,6 +329,18 @@ export class BookingRepository extends BaseRepository<
 
       if (timeToken.professionalId !== data.professionalId) {
         throw new Error('Professional does not match time token owner');
+      }
+
+      // FocusScore is advisory, not blocking
+      const validFocusScore = await tx.focusScore.findFirst({
+        where: {
+          userId: timeToken.professional.userId,
+          validUntil: { gt: new Date() }
+        },
+        orderBy: { computedAt: 'desc' }
+      });
+      if (!validFocusScore) {
+        console.warn(`[booking] No valid FocusScore for professional ${timeToken.professional.userId}, proceeding anyway`);
       }
 
       const buyer = await tx.user.findUnique({

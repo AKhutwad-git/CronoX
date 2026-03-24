@@ -63,16 +63,30 @@ export class SessionRepository extends BaseRepository<
   }
 
   async updateSessionStatus(sessionId: string, status: SessionStatus) {
-    // Status validation
-    const validStatuses = ['pending', 'active', 'completed', 'failed'];
+    const validStatuses: SessionStatus[] = [
+      'pending',
+      'active',
+      'completed',
+      'failed',
+      'cancelled_by_buyer',
+      'cancelled_by_professional',
+      'refund_requested',
+      'refunded'
+    ];
     if (!validStatuses.includes(status)) throw new Error('Invalid status');
 
     if (status === 'completed') {
-       return this.completeSession(sessionId);
+      const existingPayment = await prisma.payment.findUnique({
+        where: { sessionId }
+      });
+      if (existingPayment) {
+        return this.update(sessionId, { status: 'completed', endedAt: new Date() });
+      }
+      return this.completeSession(sessionId);
     }
 
     const updateData: Prisma.SessionUpdateInput = { status };
-    if (status === 'failed') {
+    if (['failed', 'cancelled_by_buyer', 'cancelled_by_professional', 'refunded'].includes(status)) {
       updateData.endedAt = new Date();
     }
     return this.update(sessionId, updateData);
@@ -130,7 +144,7 @@ export class SessionRepository extends BaseRepository<
             eventType: 'SessionCompleted',
             metadata: {
               paymentAmount: amount
-            }
+            } as Prisma.InputJsonValue
           }
         });
       }

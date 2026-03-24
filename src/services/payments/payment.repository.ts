@@ -5,7 +5,7 @@ import { Prisma, Payment, PaymentStatus } from '@prisma/client';
 export interface CreatePaymentData {
   sessionId: string;
   amount: number;
-  status?: 'pending' | 'settled' | 'failed';
+  status?: PaymentStatus;
   erpInvoiceId?: string;
 }
 
@@ -31,6 +31,62 @@ export class PaymentRepository extends BaseRepository<
       where: { sessionId },
       include: { session: true }
     });
+  }
+
+  async findAllPaginated(page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.payment.count(),
+      prisma.payment.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
+  }
+
+  async findByProfessionalIdPaginated(professionalId: string, page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const where: Prisma.PaymentWhereInput = {
+      session: {
+        professionalId
+      }
+    };
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.payment.count({ where }),
+      prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
+  }
+
+  async findByBuyerIdPaginated(buyerId: string, page: number, pageSize: number) {
+    const skip = (page - 1) * pageSize;
+    const where: Prisma.PaymentWhereInput = {
+      session: {
+        booking: {
+          buyerId
+        }
+      }
+    };
+    const [totalCount, items] = await prisma.$transaction([
+      prisma.payment.count({ where }),
+      prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize
+      })
+    ]);
+
+    return { totalCount, items };
   }
 
   async createWithValidation(data: CreatePaymentData) {
@@ -65,8 +121,13 @@ export class PaymentRepository extends BaseRepository<
     newStatus: PaymentStatus | 'completed' | 'processing',
     erpInvoiceId?: string
   ) {
-    const validStatuses = ['pending', 'settled', 'failed']; // Schema has 'settled', controller had 'completed'
-    // Schema Step 53: enum PaymentStatus { pending, settled, failed }
+    const validStatuses: PaymentStatus[] = [
+      'pending',
+      'settled',
+      'failed',
+      'refund_requested',
+      'refunded'
+    ];
 
     // Mapping completed -> settled
     let normalizedStatus: PaymentStatus;

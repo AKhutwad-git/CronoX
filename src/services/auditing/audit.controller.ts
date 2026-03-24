@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import { Prisma } from '@prisma/client';
 import { AuditLogRepository } from './audit-log.repository';
 import { Actor } from './audit.model';
 import { AuthenticatedRequest } from '../../middleware/auth.middleware';
@@ -25,7 +26,7 @@ export const createAuditLog = async (
       entityType: 'SystemEvent', // Or deduce from details?
       entityId,
       eventType,
-      metadata: { ...details, actor, originalEventId: eventId }
+      metadata: { ...details, actor, originalEventId: eventId } as Prisma.InputJsonValue
     });
   } catch (error: unknown) {
     console.error('Failed to create audit log', error);
