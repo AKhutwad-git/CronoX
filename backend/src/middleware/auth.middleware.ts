@@ -14,12 +14,17 @@ export interface AuthenticatedRequest extends Request {
 export const authenticate = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   const correlationId = req.headers['x-correlation-id'] as string;
+  let token: string | undefined;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Unauthorized: No token provided' });
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (req.query.token && typeof req.query.token === 'string') {
+    token = req.query.token;
   }
 
-  const token = authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized: No token provided' });
+  }
 
   try {
     const decoded = jwt.verify(token, config.jwt.secret) as { userId: string; role: string };
@@ -28,6 +33,6 @@ export const authenticate = (req: AuthenticatedRequest, res: Response, next: Nex
     next();
   } catch (error) {
     logger.error('Token verification failed', error, { correlationId });
-    res.status(401).json({ message: 'Invalid or expired token' });
+    return res.status(401).json({ message: 'Invalid or expired token' });
   }
 };

@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { BookingRepository } from './booking.repository';
 import { SessionRepository } from './session.repository';
@@ -9,6 +10,7 @@ import { PaymentRepository } from '../payments/payment.repository';
 import { AuthenticatedRequest } from '../../middleware/auth.middleware';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { sendSSE, isUserOnline } from '../sse/sse.controller';
 
 const bookingRepository = new BookingRepository();
 const sessionRepository = new SessionRepository();
@@ -44,21 +46,46 @@ const findAvailabilitySlot = async (professionalId: string, startAt: Date, endAt
 };
 
 const isWeeklyAvailable = async (professionalId: string, startAt: Date, durationMinutes: number) => {
-  const startMinute = startAt.getUTCHours() * 60 + startAt.getUTCMinutes();
-  const endMinute = startMinute + durationMinutes;
-  if (endMinute > 24 * 60) {
-    return false;
+  const dayOfWeekUTC = startAt.getUTCDay();
+  const startMinuteUTC = startAt.getUTCHours() * 60 + startAt.getUTCMinutes();
+  const endMinuteUTC = startMinuteUTC + durationMinutes;
+
+  if (endMinuteUTC <= 1440) {
+    // Session stays within the same UTC day
+    const availability = await prisma.weeklyAvailability.findFirst({
+      where: {
+        professionalId,
+        dayOfWeek: dayOfWeekUTC,
+        startMinute: { lte: startMinuteUTC },
+        endMinute: { gte: endMinuteUTC }
+      }
+    });
+    return !!availability;
+  } else {
+    // Session crosses midnight UTC
+    const firstAvailability = await prisma.weeklyAvailability.findFirst({
+      where: {
+        professionalId,
+        dayOfWeek: dayOfWeekUTC,
+        startMinute: { lte: startMinuteUTC },
+        endMinute: { gte: 1440 }
+      }
+    });
+
+    const nextDayOfWeekUTC = (dayOfWeekUTC + 1) % 7;
+    const remainingMinutes = endMinuteUTC - 1440;
+
+    const secondAvailability = await prisma.weeklyAvailability.findFirst({
+      where: {
+        professionalId,
+        dayOfWeek: nextDayOfWeekUTC,
+        startMinute: { lte: 0 },
+        endMinute: { gte: remainingMinutes }
+      }
+    });
+
+    return !!firstAvailability && !!secondAvailability;
   }
-  const dayOfWeek = startAt.getUTCDay();
-  const availability = await prisma.weeklyAvailability.findFirst({
-    where: {
-      professionalId,
-      dayOfWeek,
-      startMinute: { lte: startMinute },
-      endMinute: { gte: endMinute }
-    }
-  });
-  return !!availability;
 };
 
 const hasSessionOverlap = async (professionalId: string, startAt: Date, endAt: Date) => {
@@ -150,6 +177,158 @@ export const createBooking = async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : 'Unknown error';
     logger.error('[scheduling] booking creation failed', error);
     res.status(500).json({ message: 'Error creating booking', error: message });
+  }
+};
+
+/**
+ * POST /api/scheduling/bookings/:id/schedule
+ * Professional picks a date/time for a pending_schedule booking.
+ * Transitions: pending_schedule → scheduled, auto-creates Session.
+ */
+export const scheduleBooking = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { scheduledAt } = req.body as { scheduledAt?: string };
+    const user = (req as AuthenticatedRequest).user;
+
+    console.log("REQ.USER:", user);
+    console.log("REQ.BODY:", req.body);
+
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+    if (!id) return res.status(400).json({ message: 'Booking id is required' });
+    if (!scheduledAt) return res.status(400).json({ message: 'scheduledAt is required' });
+
+    const scheduledDate = new Date(scheduledAt);
+    if (Number.isNaN(scheduledDate.getTime())) {
+      return res.status(400).json({ message: 'scheduledAt must be a valid date' });
+    }
+    if (scheduledDate <= new Date()) {
+      return res.status(400).json({ message: 'scheduledAt must be in the future' });
+    }
+
+    const booking = await bookingRepository.getBookingWithDetails(id);
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+
+    if (booking.status !== 'pending_schedule' && booking.status !== 'scheduled') {
+      return res.status(400).json({ message: `Booking is in '${booking.status}' state, expected 'pending_schedule' or 'scheduled'` });
+    }
+
+    // Verify the requesting user is the professional who owns this token
+    const professional = await professionalRepository.findByUserId(user.userId);
+    if (!professional) return res.status(404).json({ message: 'Professional profile not found' });
+    if (professional.status !== 'active') {
+       return res.status(403).json({ message: 'Forbidden: Professional profile is not active' });
+    }
+    if (booking.token.professionalId !== professional.id) {
+      return res.status(403).json({ message: 'Forbidden: You do not own this booking' });
+    }
+
+    const token = booking.token;
+    const endDate = new Date(scheduledDate.getTime() + token.durationMinutes * 60000);
+
+    // DEBUG LOGS
+    console.log("Scheduled UTC:", scheduledDate.toISOString());
+    console.log("End UTC:", endDate.toISOString());
+
+    // Validate availability
+    if (await hasSessionOverlap(professional.id, scheduledDate, endDate)) {
+      return res.status(409).json({ message: 'Selected time overlaps with another session' });
+    }
+
+    const availabilitySlot = await findAvailabilitySlot(professional.id, scheduledDate, endDate);
+    if (availabilitySlot) {
+      console.log("Found specific availability slot:", availabilitySlot.id);
+    } else {
+      console.log("No specific slot found, checking weekly availability...");
+      const weeklyAvailable = await isWeeklyAvailable(professional.id, scheduledDate, token.durationMinutes);
+      
+      if (!weeklyAvailable) {
+        // Detailed rejection logs for troubleshooting
+        logger.warn('[scheduling] availability rejection', {
+           professionalId: professional.id,
+           scheduledAt: scheduledDate.toISOString(),
+           duration: token.durationMinutes
+        });
+        return res.status(400).json({ message: 'Selected time is outside your availability' });
+      }
+    }
+
+    // Generate controlled Jitsi meeting link with config params to disable prejoin/lobby
+    const hash = crypto.createHash('sha256').update(id + (process.env.ROOM_SECRET || 'cronox_default_room_secret')).digest('hex').substring(0, 16);
+    const roomName = `CronoX-${hash}`;
+    const meetingLink = `https://meet.jit.si/${roomName}#config.prejoinConfig.enabled=false&config.startWithVideoMuted=true&config.startWithAudioMuted=true`;
+
+    // Update booking: set scheduledAt, status, meetingLink
+    const updatedBooking = await prisma.booking.update({
+      where: { id },
+      data: {
+        scheduledAt: scheduledDate,
+        status: 'scheduled',
+        meetingLink,
+      },
+      include: {
+        token: { include: { professional: { include: { user: { select: { email: true } } } } } },
+        buyer: { select: { email: true } },
+      }
+    });
+
+    // Auto-create or Update session
+    let session = booking.session || null;
+    try {
+      if (session) {
+        session = await prisma.session.update({
+          where: { id: session.id },
+          data: {
+            startedAt: scheduledDate,
+            endedAt: endDate,
+            status: 'pending'
+          }
+        });
+      } else {
+        session = await sessionRepository.createWithValidation({
+          bookingId: id,
+          professionalId: professional.id,
+          startTime: scheduledDate,
+          endTime: endDate,
+          status: 'pending'
+        });
+      }
+    } catch (sessionError: unknown) {
+      logger.warn('[scheduling] session auto-creation during scheduling failed', sessionError instanceof Error ? { error: sessionError.message } : undefined);
+    }
+
+    if (availabilitySlot) {
+      await prisma.availabilitySlot.update({
+        where: { id: availabilitySlot.id },
+        data: { status: 'blocked' }
+      });
+    }
+
+    const isReschedule = !!booking.scheduledAt;
+    await recordAudit('Booking', id, isReschedule ? 'BookingRescheduled' : 'BookingScheduled', {
+      professionalId: professional.id,
+      scheduledAt: scheduledDate.toISOString(),
+      meetingLink,
+      sessionId: session?.id ?? null,
+    });
+
+    // Add Notification Hooks
+    // After scheduling -> notify buyer and professional
+    console.log(`[NOTIFICATION - BUYER]: Your session for Booking ${id} has been scheduled for ${scheduledDate.toISOString()}. Meeting link: ${meetingLink}`);
+    console.log(`[NOTIFICATION - PROFESSIONAL]: You have scheduled Booking ${id} for ${scheduledDate.toISOString()}. Meeting link: ${meetingLink}`);
+
+    logger.info('[scheduling] booking scheduled', {
+      bookingId: id,
+      sessionId: session?.id,
+      scheduledAt: scheduledDate.toISOString(),
+      meetingLink,
+    });
+
+    res.json({ booking: updatedBooking, session, meetingLink });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    logger.error('[scheduling] booking schedule failed', error);
+    res.status(500).json({ message: 'Error scheduling booking', error: message });
   }
 };
 
@@ -355,6 +534,67 @@ export const getSessions = async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : 'Unknown error';
     logger.error('[scheduling] sessions fetch failed', error);
     res.status(500).json({ message: 'Error fetching sessions', error: message });
+  }
+};
+
+export const getSession = async (req: Request, res: Response) => {
+  try {
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const user = (req as AuthenticatedRequest).user;
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    const session = await prisma.session.findUnique({
+      where: { id },
+      include: {
+        booking: {
+          include: {
+            token: { include: { professional: true } }
+          }
+        }
+      }
+    });
+
+    if (!session) return res.status(404).json({ message: 'Session not found' });
+
+    // Validate ownership
+    let isOwner = false;
+    if (user.role === 'buyer' && session.booking?.buyerId === user.userId) {
+       isOwner = true;
+    } else if (user.role === 'professional') {
+       const professional = await professionalRepository.findByUserId(user.userId);
+       if (professional && session.professionalId === professional.id) {
+          isOwner = true;
+       }
+    } else if (user.role === 'admin') {
+       isOwner = true;
+    }
+
+    if (!isOwner) return res.status(403).json({ message: 'Forbidden: You do not have access to this session' });
+
+    // Check time limits
+    const now = Date.now();
+    const startTime = session.startedAt?.getTime();
+    const endTime = session.endedAt?.getTime();
+
+    if (!startTime || !endTime) {
+       return res.status(400).json({ message: 'Session timing implies it is not fully scheduled' });
+    }
+
+    if (now < startTime - (5 * 60000)) {
+       return res.status(403).json({ message: 'Too early: You can only join 5 minutes before the session starts.' });
+    }
+
+    // Allow them to join if the current time is before the end date, or even slightly after (grace period?)
+    // But per instructions: let's enforce until end.
+    if (now > endTime + 15 * 60000) { // 15 min grace period
+       return res.status(403).json({ message: 'Session has already ended.' });
+    }
+
+    res.json(session);
+  } catch (error: unknown) {
+    logger.error('[scheduling] session fetch failed', error);
+    res.status(500).json({ message: 'Error fetching session', error: error instanceof Error ? error.message : String(error) });
   }
 };
 
@@ -640,5 +880,263 @@ export const createAvailabilitySlots = async (req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ message: 'Error creating availability slots', error: message });
+  }
+};
+
+export const joinSession = async (req: Request, res: Response) => {
+  try {
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const user = (req as AuthenticatedRequest).user;
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    // Track presence
+    await recordAudit('Session', id, 'SessionJoined', { userId: user.userId, timestamp: new Date().toISOString() });
+
+    const session = await prisma.session.findUnique({ where: { id }});
+    if (session && session.status === 'pending') {
+       await prisma.session.update({ where: { id }, data: { status: 'active' }});
+    }
+
+    res.json({ success: true, timestamp: new Date().toISOString() });
+  } catch (error: unknown) {
+    logger.error('[scheduling] session join failed', error);
+    res.status(500).json({ message: 'Error recording join' });
+  }
+};
+
+export const leaveSession = async (req: Request, res: Response) => {
+  try {
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const user = (req as AuthenticatedRequest).user;
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    // Track presence leave
+    await recordAudit('Session', id, 'SessionLeft', { userId: user.userId, timestamp: new Date().toISOString() });
+
+    res.json({ success: true, timestamp: new Date().toISOString() });
+  } catch (error: unknown) {
+    logger.error('[scheduling] session leave failed', error);
+    res.status(500).json({ message: 'Error recording leave' });
+  }
+};
+
+export const requestEarlyStart = async (req: Request, res: Response) => {
+  try {
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const user = (req as AuthenticatedRequest).user;
+    
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+    if (user.role !== 'buyer') {
+      return res.status(403).json({ message: 'Forbidden: Only buyers can request early start' });
+    }
+
+    const booking = await prisma.booking.findUnique({ where: { id } });
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+
+    if (booking.status !== 'scheduled' && booking.status !== 'pending_schedule') {
+      return res.status(400).json({ message: 'Cannot request early start for inactive bookings.' });
+    }
+
+    const metadata = (booking.metadata as Record<string, any>) || {};
+    metadata.earlyStartRequested = !metadata.earlyStartRequested; // Toggle it
+
+    const updated = await prisma.booking.update({
+      where: { id },
+      data: { metadata: metadata as Prisma.InputJsonValue }
+    });
+
+    await recordAudit('Booking', id, 'EarlyStartRequested', { requestedBy: user.userId, value: metadata.earlyStartRequested });
+
+    res.json({ success: true, metadata: updated.metadata });
+  } catch (error: any) {
+    logger.error('[scheduling] early start request failed', error);
+    res.status(500).json({ message: 'Error requesting early start', error: error.message });
+  }
+};
+
+export const startSessionNow = async (req: Request, res: Response) => {
+  try {
+    const idParam = req.params.id; // booking id
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const user = (req as AuthenticatedRequest).user;
+    if (!user || user.role !== 'professional') {
+      return res.status(403).json({ message: 'Forbidden: Professional only' });
+    }
+
+    // --- Full booking fetch with all needed relations ---
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: {
+        session: true,
+        token: { include: { professional: true } },
+        buyer: { select: { id: true, email: true, lastSeenAt: true } },
+      },
+    });
+
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+
+    logger.info('[startSessionNow]', {
+      bookingId: id,
+      bookingStatus: booking.status,
+      sessionId: booking.session?.id ?? null,
+      sessionStatus: booking.session?.status ?? null,
+      meetingLink: booking.meetingLink ?? null,
+    });
+
+    // --- Validate booking state ---
+    if (booking.status !== 'scheduled' && booking.status !== 'pending_schedule') {
+      return res.status(400).json({ message: 'Cannot force start a booking that is not scheduled.' });
+    }
+
+    if (booking.session?.status === 'active' || booking.session?.status === 'completed') {
+      return res.status(400).json({ message: 'Session is already active or closed.' });
+    }
+
+    // --- Validate professional ownership ---
+    const professional = await professionalRepository.findByUserId(user.userId);
+    if (!professional || booking.token.professionalId !== professional.id) {
+      return res.status(403).json({ message: 'Forbidden: You do not own this booking' });
+    }
+
+    // --- DB-based presence check (5 minute window) ---
+    const FIVE_MIN = 5 * 60 * 1000;
+    const isSseOnline = isUserOnline(booking.buyerId);
+    const isDbOnline = booking.buyer?.lastSeenAt &&
+      (Date.now() - new Date(booking.buyer.lastSeenAt).getTime() < FIVE_MIN);
+
+    logger.info('[startSessionNow] Presence check', {
+      buyerId: booking.buyerId,
+      isSseOnline,
+      isDbOnline,
+      lastSeenAt: booking.buyer?.lastSeenAt ?? null,
+    });
+
+    if (!isSseOnline && !isDbOnline) {
+      return res.status(400).json({
+        message: 'Buyer is currently offline. They must be on the sessions page before you can start.',
+      });
+    }
+
+    // --- Transition session to active ---
+    const now = new Date();
+    await prisma.booking.update({
+      where: { id },
+      data: { scheduledAt: now },
+    });
+
+    if (booking.session) {
+      await prisma.session.update({
+        where: { id: booking.session.id },
+        data: { startedAt: now, status: 'active' },
+      });
+    } else {
+      // Create session if it doesn't exist (edge case: booking was pending_schedule)
+      const durationMs = (booking.token.durationMinutes ?? 60) * 60000;
+      await prisma.session.create({
+        data: {
+          booking: { connect: { id } },
+          professional: { connect: { id: professional.id } },
+          startedAt: now,
+          endedAt: new Date(now.getTime() + durationMs),
+          status: 'active',
+        },
+      });
+    }
+
+    await recordAudit('Booking', id, 'SessionForcedStart', { triggeredBy: user.userId });
+
+    // Notify Buyer via SSE
+    sendSSE(booking.buyerId, {
+      type: 'SESSION_STARTED',
+      bookingId: id,
+      meetingLink: booking.meetingLink,
+    });
+
+    // --- Return structured response with meetingLink ---
+    res.json({ success: true, meetingLink: booking.meetingLink });
+  } catch (error: any) {
+    logger.error('[scheduling] start session now failed', error);
+    res.status(500).json({ message: 'Error starting session instantly', error: error.message });
+  }
+};
+
+export const buyerJoin = async (req: Request, res: Response) => {
+  try {
+    const idParam = req.params.id; // booking id
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const user = (req as AuthenticatedRequest).user;
+    if (!user || user.role !== 'buyer') {
+      return res.status(403).json({ message: 'Forbidden: Buyer only' });
+    }
+
+    // --- Full booking fetch with all needed relations ---
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: {
+        session: true,
+        token: {
+          include: {
+            professional: {
+              include: { user: { select: { id: true, email: true } } },
+            },
+          },
+        },
+      },
+    });
+
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (booking.buyerId !== user.userId) return res.status(403).json({ message: 'Forbidden: You do not own this booking' });
+
+    const session = booking.session;
+    if (!session) {
+      return res.status(400).json({ message: 'Join failed: No session exists for this booking yet.' });
+    }
+
+    logger.info('[buyerJoin]', {
+      bookingId: id,
+      sessionId: session.id,
+      sessionStatus: session.status,
+      meetingLink: booking.meetingLink ?? null,
+    });
+
+    if (session.status !== 'active') {
+      return res.status(400).json({ message: 'Join failed: Session is not currently active. Wait for professional to start.' });
+    }
+
+    // Check for 5-minute auto-expiry before allowing join
+    const FIVE_MINUTES = 5 * 60 * 1000;
+    if (session.startedAt && !session.buyerJoinedAt && (Date.now() - new Date(session.startedAt).getTime() > FIVE_MINUTES)) {
+      await prisma.session.update({
+        where: { id: session.id },
+        data: { status: 'missed' as any },
+      });
+
+      // Notify Buyer of expiry
+      sendSSE(booking.buyerId, { type: 'SESSION_EXPIRED', bookingId: id });
+
+      return res.status(400).json({ message: 'Session expired: You did not join within 5 minutes of the start.' });
+    }
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: { buyerJoinedAt: new Date() } as any,
+    });
+
+    await recordAudit('Booking', id, 'BuyerJoinedSession', { buyerId: user.userId });
+
+    // Notify Professional via SSE (null-safe: only if relation is loaded)
+    const profUserId = booking.token?.professional?.user?.id;
+    if (profUserId) {
+      sendSSE(profUserId, { type: 'BUYER_JOINED', bookingId: id });
+    }
+
+    // --- Return structured response with meetingLink ---
+    res.json({ success: true, meetingLink: booking.meetingLink });
+  } catch (error: any) {
+    logger.error('[scheduling] buyer join failed', error);
+    res.status(500).json({ message: 'Error recording join', error: error.message });
   }
 };

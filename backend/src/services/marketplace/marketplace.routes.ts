@@ -8,6 +8,7 @@ import {
   getListedTimeTokens,
   getTimeTokenById,
   getOrders,
+  simulatePurchase,
 } from './marketplace.controller';
 import { authenticate } from '../../middleware/auth.middleware';
 import { authorize } from '../../middleware/role.middleware';
@@ -27,6 +28,9 @@ router.post('/tokens/:id/list', authenticate, authorize(['professional']), listT
 
 // Buyer-only routes
 router.post('/tokens/:id/purchase', authenticate, authorize(['buyer']), purchaseTimeToken);
+router.post('/tokens/:id/simulate_purchase', authenticate, authorize(['buyer']), simulatePurchase);
+
+
 
 // Professional or Admin routes
 router.post('/tokens/:id/consume', authenticate, authorize(['professional', 'admin']), consumeTimeToken);

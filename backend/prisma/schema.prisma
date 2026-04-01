@@ -12,6 +12,7 @@ model User {
   passwordHash      String             @map("password_hash")
   role              UserRole
   isActive          Boolean            @default(true) @map("is_active")
+  lastSeenAt        DateTime?          @map("last_seen_at")
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
   biometricConsents BiometricConsent[]
@@ -29,6 +30,9 @@ model Professional {
   baseRate           Decimal                        @map("base_rate")
   currency           String                         @default("INR")
   status             ProfessionalStatus
+  fullName           String?                        @map("full_name")
+  bio                String?
+  availabilitySummary String?                        @map("availability_summary")
   createdAt          DateTime                       @default(now()) @map("created_at")
   certifications     String[]                       @default([])
   skills             String[]                       @default([])
@@ -142,9 +146,11 @@ model Booking {
   id          String        @id @default(uuid())
   tokenId     String        @unique @map("token_id")
   buyerId     String        @map("buyer_id")
-  scheduledAt DateTime      @map("scheduled_at")
+  scheduledAt DateTime?     @map("scheduled_at")
   status      BookingStatus
+  meetingLink String?       @map("meeting_link")
   createdAt   DateTime      @default(now()) @map("created_at")
+  metadata    Json?
   buyer       User          @relation(fields: [buyerId], references: [id])
   token       TimeToken     @relation(fields: [tokenId], references: [id])
   session     Session?
@@ -156,11 +162,19 @@ model Session {
   professionalId String        @map("professional_id")
   startedAt      DateTime?     @map("started_at")
   endedAt        DateTime?     @map("ended_at")
+  buyerJoinedAt  DateTime?     @map("buyer_joined_at")
   status         SessionStatus
+  provider       SessionProvider @default(jitsi)
+  recordingUrl   String?       @map("recording_url")
   createdAt      DateTime      @default(now()) @map("created_at")
   payment        Payment?
   booking        Booking       @relation(fields: [bookingId], references: [id])
   professional   Professional  @relation(fields: [professionalId], references: [id])
+}
+
+enum SessionProvider {
+  jitsi
+  webrtc
 }
 
 model Payment {
@@ -214,6 +228,7 @@ enum TokenState {
 }
 
 enum BookingStatus {
+  pending_schedule
   scheduled
   completed
   cancelled
@@ -224,6 +239,7 @@ enum SessionStatus {
   active
   completed
   failed
+  missed
   cancelled_by_buyer
   cancelled_by_professional
   refund_requested
@@ -236,6 +252,8 @@ enum PaymentStatus {
   failed
   refund_requested
   refunded
+  pending_review
+  disputed
 }
 
 enum AvailabilitySlotStatus {

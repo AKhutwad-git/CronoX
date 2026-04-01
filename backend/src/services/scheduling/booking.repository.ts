@@ -6,7 +6,7 @@ export interface CreateBookingData {
   timeTokenId: string;
   buyerId: string;
   professionalId: string;
-  scheduledAt: Date;
+  scheduledAt?: Date;
 }
 
 export class BookingRepository extends BaseRepository<
@@ -29,17 +29,20 @@ export class BookingRepository extends BaseRepository<
         id: true,
         scheduledAt: true,
         status: true,
+        meetingLink: true,
         token: {
           select: {
             id: true,
             durationMinutes: true,
             price: true,
+            professionalId: true,
             professional: {
               select: {
                 user: {
                   select: {
-                    email: true
-                  }
+                    email: true,
+                    lastSeenAt: true
+                  } as any
                 }
               }
             }
@@ -68,17 +71,20 @@ export class BookingRepository extends BaseRepository<
           id: true,
           scheduledAt: true,
           status: true,
+          meetingLink: true,
           token: {
             select: {
               id: true,
               durationMinutes: true,
               price: true,
+              professionalId: true,
               professional: {
                 select: {
                   user: {
                     select: {
-                      email: true
-                    }
+                      email: true,
+                      lastSeenAt: true
+                    } as any
                   }
                 }
               }
@@ -114,22 +120,26 @@ export class BookingRepository extends BaseRepository<
         id: true,
         scheduledAt: true,
         status: true,
+        meetingLink: true,
         buyer: {
           select: {
-            email: true
-          }
+            email: true,
+            lastSeenAt: true
+          } as any
         },
         token: {
           select: {
             id: true,
             durationMinutes: true,
             price: true,
+            professionalId: true,
             professional: {
               select: {
                 user: {
                   select: {
-                    email: true
-                  }
+                    email: true,
+                    lastSeenAt: true
+                  } as any
                 }
               }
             }
@@ -162,22 +172,26 @@ export class BookingRepository extends BaseRepository<
           id: true,
           scheduledAt: true,
           status: true,
+          meetingLink: true,
           buyer: {
             select: {
-              email: true
-            }
+              email: true,
+              lastSeenAt: true
+            } as any
           },
           token: {
             select: {
               id: true,
               durationMinutes: true,
               price: true,
+              professionalId: true,
               professional: {
                 select: {
                   user: {
                     select: {
-                      email: true
-                    }
+                      email: true,
+                      lastSeenAt: true
+                    } as any
                   }
                 }
               }
@@ -227,11 +241,8 @@ export class BookingRepository extends BaseRepository<
   }
 
   private async validateBookingData(data: CreateBookingData) {
-    if (!data.scheduledAt) {
-      throw new Error('scheduledAt is required');
-    }
-
-    if (data.scheduledAt <= new Date()) {
+    // scheduledAt is only required when transitioning to 'scheduled'
+    if (data.scheduledAt && data.scheduledAt <= new Date()) {
       throw new Error('Scheduled time must be in the future');
     }
 
@@ -256,6 +267,7 @@ export class BookingRepository extends BaseRepository<
       throw new Error('Professional does not match time token owner');
     }
 
+    // FocusScore is advisory, not blocking
     const validFocusScore = await prisma.focusScore.findFirst({
       where: {
         userId: timeToken.professional.userId,
@@ -264,7 +276,7 @@ export class BookingRepository extends BaseRepository<
       orderBy: { computedAt: 'desc' }
     });
     if (!validFocusScore) {
-      throw new Error('Session expired due to outdated performance data');
+      console.warn(`[booking] No valid FocusScore for professional ${timeToken.professional.userId}, proceeding anyway`);
     }
 
     const buyer = await prisma.user.findUnique({
@@ -296,15 +308,16 @@ export class BookingRepository extends BaseRepository<
     return this.create({
       token: { connect: { id: data.timeTokenId } },
       buyer: { connect: { id: data.buyerId } },
-      scheduledAt: data.scheduledAt,
-      status: 'scheduled'
+      scheduledAt: data.scheduledAt ?? null,
+      status: data.scheduledAt ? 'scheduled' : 'pending_schedule'
     });
   }
 
   async createWithSession(data: CreateBookingData): Promise<{ booking: Booking; session: Session }> {
     return prisma.$transaction(async (tx) => {
+      // scheduledAt is only required when creating with session
       if (!data.scheduledAt) {
-        throw new Error('scheduledAt is required');
+        throw new Error('scheduledAt is required when creating with session');
       }
 
       if (data.scheduledAt <= new Date()) {
@@ -332,6 +345,7 @@ export class BookingRepository extends BaseRepository<
         throw new Error('Professional does not match time token owner');
       }
 
+      // FocusScore is advisory, not blocking
       const validFocusScore = await tx.focusScore.findFirst({
         where: {
           userId: timeToken.professional.userId,
@@ -340,7 +354,7 @@ export class BookingRepository extends BaseRepository<
         orderBy: { computedAt: 'desc' }
       });
       if (!validFocusScore) {
-        throw new Error('Session expired due to outdated performance data');
+        console.warn(`[booking] No valid FocusScore for professional ${timeToken.professional.userId}, proceeding anyway`);
       }
 
       const buyer = await tx.user.findUnique({

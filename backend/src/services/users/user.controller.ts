@@ -141,6 +141,117 @@ export const getProfessionalMe = async (req: AuthenticatedRequest, res: Response
   }
 };
 
+export const createTestProfessional = async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body as {
+      email?: string;
+      password?: string;
+    };
+
+    const testEmail = email || 'ron@gmail.com';
+    const testPassword = password || 'password123';
+
+    // Create user with professional role
+    const hashedPassword = await bcrypt.hash(testPassword, 10);
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Check if user already exists
+      const existingUser = await tx.user.findUnique({ where: { email: testEmail } });
+      if (existingUser) {
+        throw new Error('User with this email already exists');
+      }
+
+      // Create User
+      const newUser = await tx.user.create({
+        data: {
+          email: testEmail,
+          passwordHash: hashedPassword,
+          role: 'professional',
+        }
+      });
+
+      // Create Professional profile
+      const newProfile = await tx.professional.create({
+        data: {
+          userId: newUser.id,
+          baseRate: 100,
+          currency: 'INR',
+          status: 'active'
+        }
+      });
+
+      return { user: newUser, profile: newProfile };
+    });
+
+    res.status(201).json({
+      message: 'Test professional user created successfully',
+      email: testEmail,
+      password: testPassword,
+      userId: result.user.id,
+      profileId: result.profile.id
+    });
+
+  } catch (error: unknown) {
+    res.status(500).json({ 
+      message: 'Error creating test user', 
+      error: getErrorMessage(error) 
+    });
+  }
+};
+
+export const createProfessionalProfile = async (req: AuthenticatedRequest, res: Response) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  if (user.role !== 'professional') {
+    return res.status(403).json({ message: 'Forbidden: User must be a professional' });
+  }
+
+  try {
+    // Check if user exists in database
+    const dbUser = await userRepository.findById(user.userId);
+    if (!dbUser) {
+      // Create user in database if they don't exist (from auth system)
+      await prisma.user.create({
+        data: {
+          id: user.userId,
+          email: `${user.userId}@cronox.local`, // Fallback email since not in auth token
+          role: 'professional',
+          passwordHash: 'auth-system-managed', // Placeholder since auth is external
+        }
+      });
+    }
+
+    // Check if professional profile already exists
+    const existingProfile = await professionalRepository.findByUserId(user.userId);
+    if (existingProfile) {
+      return res.status(400).json({ message: 'Professional profile already exists' });
+    }
+
+    // Create professional profile
+    const newProfile = await professionalRepository.create({
+      userId: user.userId,
+      baseRate: 100,
+      currency: 'INR',
+      status: 'active'
+    });
+
+    await auditLogRepository.create({
+      entityType: 'Professional',
+      entityId: newProfile.id,
+      eventType: 'ProfessionalProfileCreated',
+      metadata: {
+        userId: user.userId
+      } as Prisma.InputJsonValue
+    });
+
+    res.status(201).json(newProfile);
+  } catch (error: unknown) {
+    res.status(500).json({ message: 'Error creating professional profile', error: getErrorMessage(error) });
+  }
+};
+
 export const updateProfessionalProfile = async (req: AuthenticatedRequest, res: Response) => {
   const user = req.user;
   if (!user) {
@@ -150,9 +261,12 @@ export const updateProfessionalProfile = async (req: AuthenticatedRequest, res: 
     return res.status(403).json({ message: 'Forbidden' });
   }
 
-  const { skills, certifications } = req.body as {
+  const { skills, certifications, fullName, bio, availabilitySummary } = req.body as {
     skills?: string[];
     certifications?: string[];
+    fullName?: string;
+    bio?: string;
+    availabilitySummary?: string;
   };
 
   if (skills && !Array.isArray(skills)) {
@@ -160,6 +274,15 @@ export const updateProfessionalProfile = async (req: AuthenticatedRequest, res: 
   }
   if (certifications && !Array.isArray(certifications)) {
     return res.status(400).json({ message: 'certifications must be an array of strings' });
+  }
+  if (fullName && typeof fullName !== 'string') {
+    return res.status(400).json({ message: 'fullName must be a string' });
+  }
+  if (bio && typeof bio !== 'string') {
+    return res.status(400).json({ message: 'bio must be a string' });
+  }
+  if (availabilitySummary && typeof availabilitySummary !== 'string') {
+    return res.status(400).json({ message: 'availabilitySummary must be a string' });
   }
 
   try {
@@ -170,7 +293,10 @@ export const updateProfessionalProfile = async (req: AuthenticatedRequest, res: 
 
     const updated = await professionalRepository.update(professional.id, {
       skills: skills ?? professional.skills,
-      certifications: certifications ?? professional.certifications
+      certifications: certifications ?? professional.certifications,
+      fullName: fullName !== undefined ? fullName : professional.fullName,
+      bio: bio !== undefined ? bio : professional.bio,
+      availabilitySummary: availabilitySummary !== undefined ? availabilitySummary : professional.availabilitySummary
     });
 
     await auditLogRepository.create({
@@ -179,7 +305,10 @@ export const updateProfessionalProfile = async (req: AuthenticatedRequest, res: 
       eventType: 'ProfessionalProfileUpdated',
       metadata: {
         skillsCount: skills?.length ?? professional.skills.length,
-        certificationsCount: certifications?.length ?? professional.certifications.length
+        certificationsCount: certifications?.length ?? professional.certifications.length,
+        hasFullName: !!updated.fullName,
+        hasBio: !!updated.bio,
+        hasAvailabilitySummary: !!updated.availabilitySummary
       } as Prisma.InputJsonValue
     });
 
@@ -225,5 +354,20 @@ export const updateProfessionalVerification = async (req: AuthenticatedRequest, 
     res.json(updated);
   } catch (error: unknown) {
     res.status(500).json({ message: 'Error updating verification', error: getErrorMessage(error) });
+  }
+};
+
+export const pingUserPresence = async (req: AuthenticatedRequest, res: Response) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+  try {
+    await prisma.user.update({
+      where: { id: user.userId },
+      data: { lastSeenAt: new Date() }
+    });
+    res.json({ success: true, timestamp: new Date().toISOString() });
+  } catch (error: unknown) {
+    res.status(500).json({ message: 'Error updating presence' });
   }
 };

@@ -118,7 +118,7 @@ export class PaymentRepository extends BaseRepository<
 
   async updatePaymentStatus(
     paymentId: string,
-    newStatus: PaymentStatus | 'completed' | 'processing',
+    newStatus: PaymentStatus | 'completed' | 'processing' | 'pending_review' | 'disputed',
     erpInvoiceId?: string
   ) {
     const validStatuses: PaymentStatus[] = [
@@ -126,7 +126,9 @@ export class PaymentRepository extends BaseRepository<
       'settled',
       'failed',
       'refund_requested',
-      'refunded'
+      'refunded',
+      'pending_review' as PaymentStatus,
+      'disputed' as PaymentStatus
     ];
 
     // Mapping completed -> settled
@@ -136,7 +138,7 @@ export class PaymentRepository extends BaseRepository<
     } else if (newStatus === 'processing') {
       normalizedStatus = 'pending';
     } else {
-      normalizedStatus = newStatus;
+      normalizedStatus = newStatus as any;
     }
 
     if (!validStatuses.includes(normalizedStatus)) {

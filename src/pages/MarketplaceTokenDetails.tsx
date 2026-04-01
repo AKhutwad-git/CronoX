@@ -6,6 +6,7 @@ import { StatusBadge, type SessionStatus } from '@/components/ui/StatusBadge';
 import { PriceDisplay } from '@/components/ui/PriceDisplay';
 import { Button } from '@/components/ui/button';
 import { ErrorNotice } from '@/components/ui/ErrorNotice';
+import { isWithinAvailability, parseAsIST, generateSuggestedTimes, getISTInputValues } from '@/lib/date-utils';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { TrustBadge } from '@/components/ui/TrustBadge';
@@ -370,6 +371,11 @@ const MarketplaceTokenDetails = () => {
 
   const canBook = role === 'buyer' && token?.state === 'purchased' && !booking && hasValidPerformanceData;
 
+  const suggestedTimes = useMemo(() => {
+    if (!availability || availability.length === 0 || !canBook) return [];
+    return generateSuggestedTimes(availability, token?.durationMinutes || 60, 4);
+  }, [availability, token?.durationMinutes, canBook]);
+
   const handleBooking = async () => {
     if (!token || !id) {
       return;
@@ -402,7 +408,9 @@ const MarketplaceTokenDetails = () => {
       return;
     }
 
-    const scheduledAt = new Date(`${bookingDate}T${bookingTime}`);
+    const scheduledLocal = `${bookingDate}T${bookingTime}`;
+    const scheduledAt = parseAsIST(scheduledLocal);
+    
     if (Number.isNaN(scheduledAt.getTime())) {
       toast({
         title: 'Invalid date',
@@ -415,23 +423,14 @@ const MarketplaceTokenDetails = () => {
     if (scheduledAt.getTime() <= Date.now()) {
       toast({
         title: 'Choose a future time',
-        description: 'Booking times must be in the future.',
+        description: 'Booking times must be in the future (IST).',
         variant: 'destructive',
       });
       return;
     }
 
     if (availability.length > 0 && token?.durationMinutes) {
-      const day = scheduledAt.getUTCDay();
-      const startMinute = scheduledAt.getUTCHours() * 60 + scheduledAt.getUTCMinutes();
-      const endMinute = startMinute + token.durationMinutes;
-      const inAvailability = availability.some(
-        (slot) =>
-          slot.dayOfWeek === day &&
-          slot.startMinute <= startMinute &&
-          slot.endMinute >= endMinute
-      );
-      if (!inAvailability) {
+      if (!isWithinAvailability(scheduledAt.toISOString(), availability, token.durationMinutes)) {
         toast({
           title: 'Outside availability',
           description: 'Select a time within the professional availability window.',
@@ -769,6 +768,27 @@ const MarketplaceTokenDetails = () => {
                     )}
                   </Button>
                 </div>
+                {suggestedTimes.length > 0 && !booking && (
+                  <div className="mt-4 border-t border-border pt-3">
+                    <p className="text-xs text-muted-foreground mb-2">Suggested Times (IST):</p>
+                    <div className="flex flex-wrap gap-2">
+                      {suggestedTimes.map((time, i) => (
+                        <Badge 
+                          key={i} 
+                          variant="outline" 
+                          className="cursor-pointer hover:bg-primary/10 hover:text-primary transition-colors"
+                          onClick={() => {
+                            const { dateStr, timeStr } = getISTInputValues(time);
+                            setBookingDate(dateStr);
+                            setBookingTime(timeStr);
+                          }}
+                        >
+                          {new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(time)}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="mt-3 space-y-2">
                   <ErrorNotice title="Booking failed" message={bookingError} />
                   <ErrorNotice title="Booking unavailable" message={bookingLoadError} />

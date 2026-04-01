@@ -18,18 +18,27 @@ import pricingRoutes from './services/pricing/pricing.routes';
 import metricsRoutes, { biometricsRouter } from './services/metrics/metrics.routes';
 import auditingRoutes from './services/auditing/auditing.routes';
 import sessionRoutes from './services/scheduling/session.routes';
-
-import stripeRoutes from './services/payments/stripe.routes';
+import sseRoutes from './services/sse/sse.routes';
 
 const app = express();
 
 // Middleware
 app.use(cors());
 
-// Webhook must be parsed as raw body, so we put it before express.json()
-app.use('/api/webhooks/stripe', stripeRoutes);
+/**
+ * ✅ CRITICAL FIX:
+ * Stripe webhook MUST use raw body BEFORE express.json()
+ */
+app.use(
+  '/api/payments/webhook',
+  express.raw({ type: 'application/json' })
+);
 
+/**
+ * ✅ Normal JSON parsing AFTER webhook
+ */
 app.use(express.json());
+
 app.use(correlationIdMiddleware);
 
 // Health check endpoint
@@ -48,6 +57,7 @@ app.use('/api/pricing', pricingRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/biometrics', biometricsRouter);
 app.use('/api/auditing', auditingRoutes);
+app.use('/api/sse', sseRoutes);
 
 // 404 handler (must be after all routes)
 app.use(notFoundHandler);
@@ -57,7 +67,6 @@ app.use(globalErrorHandler);
 
 /**
  * Graceful shutdown handler
- * Closes database connections and exits cleanly
  */
 async function shutdown(signal: string): Promise<void> {
   logger.info(`${signal} received, starting graceful shutdown...`);
@@ -73,7 +82,7 @@ async function shutdown(signal: string): Promise<void> {
 }
 
 /**
- * Start the server with database connection check
+ * Start the server
  */
 async function startServer(): Promise<void> {
   try {
@@ -96,18 +105,15 @@ async function startServer(): Promise<void> {
       process.exit(1);
     });
 
-    // Verify database connection before starting
     logger.info('Checking database connection...');
     await prisma.$connect();
     logger.info('✅ Database connection successful');
 
-    // Start HTTP server
     const server = app.listen(config.server.port, () => {
       logger.info(`🚀 Backend server is running at http://localhost:${config.server.port}`);
       logger.info(`Environment: ${config.server.nodeEnv}`);
     });
 
-    // Handle server errors
     server.on('error', (error: NodeJS.ErrnoException) => {
       if (error.code === 'EADDRINUSE') {
         logger.error(`Port ${config.server.port} is already in use`);
@@ -119,25 +125,21 @@ async function startServer(): Promise<void> {
 
   } catch (error) {
     logger.error('❌ Failed to start server', error);
-    logger.error('Database connection failed. Exiting...');
     process.exit(1);
   }
 }
 
-// Register shutdown handlers
+// Shutdown handlers
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Handle uncaught exceptions (don't crash the server)
 process.on('uncaughtException', (error: Error) => {
   logger.error('Uncaught Exception', error);
-  // In production, you might want to restart gracefully
-  // For now, we log but don't crash
 });
 
 process.on('unhandledRejection', (reason: unknown) => {
   logger.error('Unhandled Promise Rejection', reason);
 });
 
-// Start the application
+// Start server
 startServer();

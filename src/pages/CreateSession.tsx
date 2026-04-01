@@ -47,32 +47,6 @@ const CreateSession = () => {
   });
   const [isOnboardingLoading, setIsOnboardingLoading] = useState(false);
 
-  const profileStorageKey = 'cronox.profile';
-
-  const readLocalProfile = () => {
-    if (typeof localStorage === 'undefined') {
-      return { fullName: '', bio: '', availabilitySummary: '' };
-    }
-    try {
-      const raw = localStorage.getItem(profileStorageKey);
-      if (!raw) {
-        return { fullName: '', bio: '', availabilitySummary: '' };
-      }
-      const parsed = JSON.parse(raw) as {
-        fullName?: string;
-        bio?: string;
-        availabilitySummary?: string;
-      };
-      return {
-        fullName: parsed.fullName ?? '',
-        bio: parsed.bio ?? '',
-        availabilitySummary: parsed.availabilitySummary ?? '',
-      };
-    } catch {
-      return { fullName: '', bio: '', availabilitySummary: '' };
-    }
-  };
-
   const getErrorMessage = (error: unknown) => {
     if (error instanceof Error) {
       return error.message;
@@ -123,22 +97,24 @@ const CreateSession = () => {
     const loadOnboarding = async () => {
       try {
         setIsOnboardingLoading(true);
-        const localProfile = readLocalProfile();
         const data = await getProfessionalMe();
         const skills = Array.isArray((data as { skills?: unknown }).skills) ? ((data as { skills?: string[] }).skills ?? []) : [];
         const missing: string[] = [];
-        if (!localProfile.fullName.trim()) {
+        
+        // Check backend profile data instead of localStorage
+        if (!(data as { fullName?: string }).fullName?.trim()) {
           missing.push('Full name');
         }
-        if (!localProfile.bio.trim()) {
+        if (!(data as { bio?: string }).bio?.trim()) {
           missing.push('Bio');
         }
-        if (!localProfile.availabilitySummary.trim()) {
+        if (!(data as { availabilitySummary?: string }).availabilitySummary?.trim()) {
           missing.push('Availability summary');
         }
         if (skills.length === 0) {
           missing.push('Skills');
         }
+        
         if (isMounted) {
           setOnboardingStatus({ complete: missing.length === 0, missing });
         }

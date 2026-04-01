@@ -55,7 +55,8 @@ const buildHeaders = (init?: ApiRequestInit) => {
   }
 
   try {
-    const jwt = typeof localStorage !== "undefined" ? localStorage.getItem("cronox.token") : null;
+    const jwt = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
+    console.log("TOKEN USED:", jwt);
     if (jwt && !headers.has("Authorization")) {
       headers.set("Authorization", `Bearer ${jwt}`);
     }
@@ -157,11 +158,36 @@ export const getBookings = async () =>
   apiRequest(`/scheduling/bookings`, {
   });
 
+export const getSession = async (id: string) =>
+  apiRequest(`/scheduling/sessions/${id}`, {
+  });
+
+export const joinSession = async (id: string) =>
+  apiRequest(`/scheduling/sessions/${id}/join`, {
+    method: "POST"
+  });
+
+export const leaveSession = async (id: string) =>
+  apiRequest(`/scheduling/sessions/${id}/leave`, {
+    method: "POST"
+  });
+
 export const getProfessionalMe = async () =>
   apiRequest(`/users/professionals/me`, {
   });
 
-export const updateProfessionalProfile = async (payload: { skills?: string[]; certifications?: string[] }) =>
+export const createProfessionalProfile = async () =>
+  apiRequest(`/users/professionals/me`, {
+    method: "POST",
+  });
+
+export const updateProfessionalProfile = async (payload: { 
+  skills?: string[]; 
+  certifications?: string[];
+  fullName?: string;
+  bio?: string;
+  availabilitySummary?: string;
+}) =>
   apiRequest(`/users/professionals/me`, {
     method: "PATCH",
     body: JSON.stringify(payload),
@@ -206,6 +232,14 @@ export const cancelBooking = async (bookingId: string) =>
     method: "DELETE",
   });
 
+export const scheduleBooking = async (bookingId: string, scheduledAt: string) =>
+  apiRequest(`/scheduling/bookings/${bookingId}/schedule`, {
+    method: "POST",
+    body: JSON.stringify({
+      scheduledAt: scheduledAt
+    }),
+  });
+
 export const getWeeklyAvailability = async (professionalId?: string) =>
   apiRequest(`/scheduling/availability/weekly${professionalId ? `?professionalId=${professionalId}` : ""}`, {
   });
@@ -221,6 +255,27 @@ export const updateWeeklyAvailability = async (
 export const startSession = async (sessionId: string) =>
   apiRequest(`/scheduling/sessions/${sessionId}/start`, {
     method: "POST",
+  });
+
+export const requestEarlyStart = async (bookingId: string) =>
+  apiRequest(`/scheduling/bookings/${bookingId}/request-early-start`, {
+    method: "POST",
+  });
+
+export const startSessionNow = async (bookingId: string) =>
+  apiRequest<{ success: boolean; meetingLink: string }>(`/scheduling/bookings/${bookingId}/start-now`, {
+    method: "POST",
+  });
+
+export const buyerJoin = async (bookingId: string) =>
+  apiRequest<{ success: boolean; meetingLink: string }>(`/scheduling/bookings/${bookingId}/buyer-join`, {
+    method: "POST",
+  });
+
+export const pingUser = async () =>
+  apiRequest(`/users/me/ping`, {
+    method: "POST",
+    skipJsonContentType: true
   });
 
 export const endSession = async (sessionId: string, status: "completed" | "failed") =>

@@ -50,12 +50,114 @@ const settlePaymentForSession = async (sessionId: string): Promise<void> => {
 
     // Determine currency for audit (default to INR if not stored elsewhere)
     let currency = 'INR';
+    let durationMinutes = 60; // default
     const sWithToken = await prisma.session.findUnique({
       where: { id: sessionId },
-      include: { booking: { include: { token: { select: { currency: true } } } } }
+      include: { booking: { include: { token: { select: { currency: true, durationMinutes: true } } } } }
     });
-    if (sWithToken?.booking?.token?.currency) {
+    if (sWithToken?.booking?.token) {
       currency = sWithToken.booking.token.currency;
+      durationMinutes = sWithToken.booking.token.durationMinutes;
+    }
+
+    // AUDIT LOG VALIDATION
+    const auditLogs = await prisma.auditLog.findMany({
+      where: {
+        entityType: 'Session',
+        entityId: sessionId,
+        eventType: { in: ['SessionJoined', 'SessionLeft'] }
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+
+    const MIN_USER_PRESENCE_MS = 2 * 60000; // 2 minute safeguard
+    const validPresenceMap: Record<string, { firstJoin: number; lastLeave: number }> = {};
+
+    for (const log of auditLogs) {
+      const meta = log.metadata as any;
+      const userId = meta?.userId;
+      if (!userId) continue;
+
+      if (!validPresenceMap[userId]) {
+        validPresenceMap[userId] = { firstJoin: log.createdAt.getTime(), lastLeave: Date.now() };
+      }
+      
+      if (log.eventType === 'SessionJoined') {
+        const joinTime = log.createdAt.getTime();
+        if (joinTime < validPresenceMap[userId].firstJoin) {
+          validPresenceMap[userId].firstJoin = joinTime;
+        }
+      }
+      if (log.eventType === 'SessionLeft') {
+        validPresenceMap[userId].lastLeave = log.createdAt.getTime();
+      }
+    }
+
+    const validUserIds = Object.keys(validPresenceMap).filter(uid => {
+      const p = validPresenceMap[uid];
+      return (p.lastLeave - p.firstJoin) >= MIN_USER_PRESENCE_MS;
+    });
+
+    const hasBothUsers = validUserIds.length >= 2;
+    let actualOverlapMs = 0;
+
+    if (hasBothUsers) {
+      // For exactly 2 users (Buyer + Professional), compute the actual interaction overlap
+      const p1 = validPresenceMap[validUserIds[0]];
+      const p2 = validPresenceMap[validUserIds[1]];
+      
+      const overlapStart = Math.max(p1.firstJoin, p2.firstJoin);
+      const overlapEnd = Math.min(p1.lastLeave, p2.lastLeave);
+      
+      actualOverlapMs = Math.max(0, overlapEnd - overlapStart);
+    }
+
+    const failureThreshold = (durationMinutes * 60000) * 0.25; // 25% for hard dispute
+    const reviewThreshold = (durationMinutes * 60000) * 0.5; // 50% for review
+    const actualDurationMs = actualOverlapMs;
+
+    if (!hasBothUsers || actualDurationMs < failureThreshold) {
+      const reason = !hasBothUsers ? 'Single user join' : 'Session duration too short (< 25%)';
+      logger.warn('[sessions] session auto-disputed', { 
+        sessionId, paymentId, hasBothUsers, actualDurationMs, reason 
+      });
+
+      await paymentRepository.updatePaymentStatus(paymentId, 'disputed');
+      await auditLogRepository.create({
+        entityType: 'Payment',
+        entityId: paymentId,
+        eventType: 'PaymentAutoDisputed',
+        metadata: {
+          sessionId,
+          reason,
+          hasBothUsers,
+          uniqueUsersCount: validUserIds.length,
+          actualDurationMs,
+          flaggedAt: new Date().toISOString()
+        } as Prisma.InputJsonValue,
+      });
+      return;
+    }
+
+    if (actualDurationMs < reviewThreshold) {
+      logger.warn('[sessions] session flagged for review', { 
+        sessionId, paymentId, actualDurationMs 
+      });
+
+      await paymentRepository.updatePaymentStatus(paymentId, 'pending_review');
+      await auditLogRepository.create({
+        entityType: 'Payment',
+        entityId: paymentId,
+        eventType: 'PaymentFlaggedForReview',
+        metadata: {
+          sessionId,
+          reason: 'Session duration below 50%',
+          actualDurationMs,
+          reviewThreshold,
+          flaggedAt: new Date().toISOString()
+        } as Prisma.InputJsonValue,
+      });
+      return;
     }
 
     await paymentRepository.updatePaymentStatus(paymentId, 'settled');
@@ -230,6 +332,10 @@ export const startSession = async (req: AuthenticatedRequest, res: Response) => 
             startedAt: new Date()
         });
 
+        // Notification Hooks
+        console.log(`[NOTIFICATION - BUYER]: Session ${id} has started!`);
+        console.log(`[NOTIFICATION - PROFESSIONAL]: Session ${id} has started!`);
+
         logger.info('[sessions] session started', { correlationId, sessionId: id, userId: user.userId, role: user.role });
         res.json(updated);
     } catch (error: unknown) {
@@ -284,11 +390,91 @@ export const endSession = async (req: AuthenticatedRequest, res: Response) => {
           await settlePaymentForSession(id);
         }
 
+        // Notification Hooks
+        console.log(`[NOTIFICATION - BUYER]: Session ${id} has been completed.`);
+        console.log(`[NOTIFICATION - PROFESSIONAL]: Session ${id} has been completed and payment settled.`);
+
         logger.info('[sessions] session ended', { correlationId, sessionId: id, status, userId: user.userId, role: user.role });
         res.json(updated);
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         logger.error('[sessions] session end failed', error, { correlationId, sessionId: id, userId: user.userId, role: user.role });
         res.status(500).json({ message: 'Error ending session', error: message });
+    }
+};
+
+export const disputeSession = async (req: AuthenticatedRequest, res: Response) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const { reason } = req.body;
+
+    if (!reason) return res.status(400).json({ message: 'Reason is required' });
+
+    try {
+        const session = await sessionRepository.findById(id);
+        if (!session) return res.status(404).json({ message: 'Session not found' });
+
+        // Update payment status to disputed
+        const payment = await paymentRepository.findBySessionId(id);
+        if (payment) {
+            await paymentRepository.updatePaymentStatus(payment.id, 'disputed');
+        }
+
+        await auditLogRepository.create({
+            entityType: 'Session',
+            entityId: id,
+            eventType: 'SessionDisputedManual',
+            metadata: {
+                userId: user.userId,
+                reason,
+                timestamp: new Date().toISOString()
+            } as Prisma.InputJsonValue
+        });
+
+        res.json({ success: true, message: 'Session dispute recorded' });
+    } catch (error: unknown) {
+        logger.error('[sessions] dispute failed', error);
+        res.status(500).json({ message: 'Error recording dispute' });
+    }
+};
+
+export const updateSessionRecording = async (req: AuthenticatedRequest, res: Response) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    const { recordingUrl } = req.body;
+
+    if (!recordingUrl) return res.status(400).json({ message: 'Recording URL is required' });
+
+    try {
+        const session = await sessionRepository.findById(id);
+        if (!session) return res.status(404).json({ message: 'Session not found' });
+
+        // Update session with recording URL
+        await prisma.session.update({
+            where: { id },
+            data: { recordingUrl } as any
+        });
+
+        await auditLogRepository.create({
+            entityType: 'Session',
+            entityId: id,
+            eventType: 'SessionRecordingUpdated',
+            metadata: {
+                userId: user.userId,
+                recordingUrl,
+                timestamp: new Date().toISOString()
+            } as Prisma.InputJsonValue
+        });
+
+        res.json({ success: true, message: 'Session recording updated' });
+    } catch (error: unknown) {
+        logger.error('[sessions] recording update failed', error);
+        res.status(500).json({ message: 'Error updating recording' });
     }
 };

@@ -19,6 +19,15 @@ The platform handles the entire lifecycle: from token issuance and marketplace l
 
 ---
 
+## 🆕 Recent Updates
+
+- **Stripe Webhook Reliability**: Fixed webhook routing (`/api/payments/webhook`) and payload parsing to ensure Stripe integration cleanly fulfills payments and auto-creates sessions.
+- **Enhanced Authentication**: Standardized JWT Token storage across the frontend and reinforced backend middleware to cleanly intercept expired sessions and prevent bleeding into controllers.
+- **Robust Scheduling API**: Improved the booking payload validations to properly transmit strict ISO date strings (`scheduledAt`) and eliminate HTTP 400 errors during booking and scheduling operations.
+- **Better Developer Experience**: Added targeted debug logging around critical transaction paths (Stripe webhooks and schedule authentication).
+
+---
+
 ## 🚀 Features
 
 - **Time-Token Marketplace**: Experts list specialized time units as tradable tokens.

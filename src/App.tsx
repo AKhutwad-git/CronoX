@@ -18,6 +18,7 @@ import CreateSession from "./pages/CreateSession";
 import Earnings from "./pages/Earnings";
 import Profile from "./pages/Profile";
 import Availability from "./pages/Availability";
+import SessionRoom from "./pages/SessionRoom";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -198,6 +199,7 @@ const App = () => (
               <Route path="/create-session" element={<RoleGuard allowedRoles={['professional']}><CreateSession /></RoleGuard>} />
               <Route path="/earnings" element={<RoleGuard allowedRoles={['professional']}><Earnings /></RoleGuard>} />
               <Route path="/availability" element={<RoleGuard allowedRoles={['professional']}><Availability /></RoleGuard>} />
+              <Route path="/session/:id" element={<RoleGuard><SessionRoom /></RoleGuard>} />
               <Route path="/profile" element={<RoleGuard><Profile /></RoleGuard>} />
               <Route path="*" element={<NotFound />} />
             </Routes>

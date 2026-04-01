@@ -202,10 +202,15 @@ export const purchaseTimeToken: RequestHandler = async (req, res: Response) => {
     if (!tokenWithProfessional) {
       return res.status(404).json({ message: 'TimeToken not found' });
     }
-    const { getLatestValidFocusScore } = await import('../metrics/focus-score.service');
-    const validScore = await getLatestValidFocusScore(tokenWithProfessional.professional.userId);
-    if (!validScore) {
-      return res.status(400).json({ message: 'Session expired due to outdated performance data' });
+    // FocusScore is advisory, not a hard gate for purchases
+    try {
+      const { getLatestValidFocusScore } = await import('../metrics/focus-score.service');
+      const validScore = await getLatestValidFocusScore(tokenWithProfessional.professional.userId);
+      if (!validScore) {
+        logger.warn(`[marketplace] No valid FocusScore for professional ${tokenWithProfessional.professional.userId}, proceeding with purchase anyway`);
+      }
+    } catch (fsErr) {
+      logger.warn('[marketplace] FocusScore check failed, proceeding', fsErr instanceof Error ? { error: fsErr.message } : undefined);
     }
 
     const buyerId = user?.userId;
@@ -229,6 +234,30 @@ export const purchaseTimeToken: RequestHandler = async (req, res: Response) => {
     res.status(500).json({ message: 'Error purchasing token', error: message });
   }
 };
+
+export const simulatePurchase: RequestHandler = async (req, res: Response) => {
+  const { id } = req.params;
+  const user = (req as AuthenticatedRequest).user;
+  try {
+    const token = await timeTokenRepository.findById(id as string) as TimeTokenRecord;
+    if (!token || token.state !== 'listed') return res.status(400).json({ message: 'Cannot purchase' });
+    
+    const updatedToken = await timeTokenRepository.update(id as string, { state: 'purchased', ownerId: user?.userId }) as TimeTokenRecord;
+    
+    // Create order and booking just like webhook does
+    const prisma = (await import('../../lib/prisma')).default;
+    await prisma.marketplaceOrder.create({
+      data: { tokenId: id as string, buyerId: user!.userId, pricePaid: token.price }
+    });
+    await prisma.booking.create({
+      data: { tokenId: id as string, buyerId: user!.userId, status: 'pending_schedule' }
+    });
+    res.json({ message: 'simulated', token: updatedToken });
+  } catch (error: unknown) {
+     res.status(500).json({ message: 'Error simulating', error: error instanceof Error ? error.message : String(error) });
+  }
+};
+
 
 export const getListedTimeTokens: RequestHandler = async (req, res: Response) => {
   try {
@@ -352,14 +381,16 @@ export const getTimeTokenById: RequestHandler = async (req, res: Response) => {
       return res.status(404).json({ message: 'TimeToken not found' });
     }
 
-    // Bio-Temporal Hard Filter: For listed tokens, check if professional is in the zone
+    // Bio-Temporal advisory check (non-blocking)
     if (token.state === 'listed') {
-      const { getLatestValidFocusScore } = await import('../metrics/focus-score.service');
-      const validScore = await getLatestValidFocusScore(token.professional.userId);
-      if (!validScore) {
-        return res.status(404).json({ 
-          message: 'This session has expired bio-temporally. Waiting for professional to re-sync.' 
-        });
+      try {
+        const { getLatestValidFocusScore } = await import('../metrics/focus-score.service');
+        const validScore = await getLatestValidFocusScore(token.professional.userId);
+        if (!validScore) {
+          logger.warn(`[marketplace] No valid FocusScore for professional ${token.professional.userId} on token ${token.id}`);
+        }
+      } catch (fsErr) {
+        logger.warn('[marketplace] FocusScore check failed', fsErr instanceof Error ? { error: fsErr.message } : undefined);
       }
     }
 

@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea';
 import { TrustBadge } from '@/components/ui/TrustBadge';
 import { useToast } from '@/hooks/use-toast';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   apiRequest,
   getProfessionalMe,
@@ -44,6 +45,9 @@ type ProfessionalProfile = {
   verificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
   skills?: string[];
   certifications?: string[];
+  fullName?: string;
+  bio?: string;
+  availabilitySummary?: string;
   user?: {
     email?: string;
     role?: string;
@@ -99,6 +103,7 @@ type Metric = {
 const Profile = () => {
   const { role, token } = useRole();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [professional, setProfessional] = useState<ProfessionalProfile | null>(null);
   const [fullName, setFullName] = useState('');
   const [bio, setBio] = useState('');
@@ -187,18 +192,13 @@ const Profile = () => {
     refetchInterval: 30000,
   });
 
-  const {
-    data: professionalProfile,
-    isLoading: isLoadingProfile,
-    error: profileLoadError,
-  } = useQuery({
+  const { data: professionalProfile, isLoading: isLoadingProfile, error: profileLoadError } = useQuery({
     queryKey: ['profile', userId],
-    queryFn: async () => {
-      const response = await getProfessionalMe();
-      return response as ProfessionalProfile;
+    queryFn: () => {
+      if (!userId || role !== 'professional') return Promise.resolve(null);
+      return getProfessionalMe();
     },
-    enabled: role === 'professional' && Boolean(token && userId),
-    refetchInterval: 30000,
+    enabled: !!userId && role === 'professional',
   });
 
   const readLocalProfile = useCallback(() => {
@@ -259,6 +259,17 @@ const Profile = () => {
     setProfessional(professionalProfile);
     setSkillsInput((professionalProfile.skills ?? []).join(', '));
     setCertificationsInput((professionalProfile.certifications ?? []).join(', '));
+    
+    // Load profile fields from backend, fallback to localStorage
+    if (professionalProfile.fullName) {
+      setFullName(professionalProfile.fullName);
+    }
+    if (professionalProfile.bio) {
+      setBio(professionalProfile.bio);
+    }
+    if (professionalProfile.availabilitySummary) {
+      setAvailabilitySummary(professionalProfile.availabilitySummary);
+    }
   }, [professionalProfile]);
 
   useEffect(() => {
@@ -455,27 +466,56 @@ const Profile = () => {
     }
     try {
       setIsSaving(true);
+      
+      // Save to localStorage for backward compatibility
       writeLocalProfile({
         fullName: fullName.trim(),
         bio: bio.trim(),
         availabilitySummary: availabilitySummary.trim(),
       });
+      
       const certifications = certificationsInput
         .split(',')
         .map((certification) => certification.trim())
         .filter(Boolean);
-      const updated = await updateProfessionalProfile({ skills: parsedSkills, certifications });
+      
+      // Save all fields to backend
+      const updated = await updateProfessionalProfile({ 
+        skills: parsedSkills, 
+        certifications,
+        fullName: fullName.trim(),
+        bio: bio.trim(),
+        availabilitySummary: availabilitySummary.trim()
+      });
+      
       setProfessional((current) => ({
         ...(current ?? {}),
         ...(updated as ProfessionalProfile),
         skills: parsedSkills,
         certifications,
+        fullName: fullName.trim(),
+        bio: bio.trim(),
+        availabilitySummary: availabilitySummary.trim()
       }));
+      
+      // Invalidate cache to refresh data in other components (like CreateSession)
+      queryClient.invalidateQueries({ queryKey: ['profile', userId] });
+      
       toast({
         title: 'Profile updated',
         description: 'Your professional profile has been saved.',
       });
     } catch (error: unknown) {
+      // Handle 404 error specifically - profile doesn't exist
+      if (error && typeof error === 'object' && 'status' in error && error.status === 404) {
+        toast({
+          title: 'Profile not found',
+          description: 'Please contact support to create your professional profile.',
+          variant: 'destructive',
+        });
+        return;
+      }
+      
       const message = error instanceof Error ? error.message : 'Unable to update profile.';
       toast({
         title: 'Update failed',

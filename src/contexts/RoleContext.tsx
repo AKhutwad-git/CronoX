@@ -73,7 +73,7 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return null;
     }
     try {
-      const stored = localStorage.getItem('cronox.token');
+      const stored = localStorage.getItem('token');
       if (!stored) {
         return null;
       }
@@ -104,7 +104,7 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAuthenticatedState(auth);
     if (!auth) {
       if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem('cronox.token');
+        localStorage.removeItem('token');
       }
       setTokenState(null);
       setRoleState(null);
@@ -116,13 +116,13 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setTokenState(nextToken);
       if (nextToken && isTokenValid(nextToken)) {
         if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('cronox.token', nextToken);
+          localStorage.setItem('token', nextToken);
         }
         setAuthenticatedState(true);
         setRoleState(resolveRoleFromToken(nextToken));
       } else {
         if (typeof localStorage !== 'undefined') {
-          localStorage.removeItem('cronox.token');
+          localStorage.removeItem('token');
         }
         setAuthenticatedState(false);
         setRoleState(null);
@@ -136,7 +136,7 @@ export const RoleProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTokenState(null);
     setAuthenticatedState(false);
     if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem('cronox.token');
+      localStorage.removeItem('token');
     }
   }, []);
 
